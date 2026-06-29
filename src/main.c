@@ -252,37 +252,6 @@ load_wallpaper(wallpaper_t *wp)
     wp->h = h;
 }
 
-/* ---- Desktop logo (centered over the gradient when no wallpaper) ---- */
-
-static uint32_t *s_desktop_logo;
-static int s_desktop_logo_w, s_desktop_logo_h;
-
-static void
-load_desktop_logo(void)
-{
-    int fd = open("/usr/share/logo.raw", O_RDONLY);
-    if (fd < 0)
-        return;
-    uint32_t hdr[2];
-    if (read(fd, hdr, 8) != 8) { close(fd); return; }
-    int w = (int)hdr[0], h = (int)hdr[1];
-    if (w <= 0 || h <= 0 || w > 4096 || h > 4096) { close(fd); return; }
-    size_t sz = (size_t)w * h * 4;
-    uint32_t *px = malloc(sz);
-    if (!px) { close(fd); return; }
-    size_t got = 0;
-    while (got < sz) {
-        ssize_t n = read(fd, (char *)px + got, sz - got);
-        if (n <= 0) break;
-        got += (size_t)n;
-    }
-    close(fd);
-    if (got < sz) { free(px); return; }
-    s_desktop_logo = px;
-    s_desktop_logo_w = w;
-    s_desktop_logo_h = h;
-}
-
 /* ---- Compositor globals (used by the invoke handler) ---- */
 
 static compositor_t *s_comp;
@@ -309,19 +278,10 @@ static void set_volume(int v)
 static void
 desktop_draw_cb(surface_t *s, int w, int h)
 {
-    /* Centered Aegis logo over the gradient backdrop. Only on the "Aegis"
-     * wallpaper preset (0); other presets are plain backgrounds. Also skipped
-     * when an image wallpaper is loaded (the image is then the desktop). */
-    if (s_desktop_logo && s_desktop_logo_w > 0 &&
-        s_comp && !s_comp->wallpaper.pixels && glyph_theme_wallpaper() == 0) {
-        int dw = w / 4;                       /* ~1/4 screen width */
-        int dh = s_desktop_logo_h * dw / s_desktop_logo_w;
-        int lx = (w - dw) / 2;
-        int ly = (h - dh) / 2;
-        draw_blit_alpha_scaled(s, lx, ly, dw, dh,
-                               s_desktop_logo, s_desktop_logo_w, s_desktop_logo_h);
-    }
-    /* full_redraw is still set while on_draw_desktop runs (cleared at the end
+    /* The desktop background is the installed wallpaper image — compositor.c
+     * blits /usr/share/wallpaper.raw scaled to the framebuffer. Nothing extra
+     * is drawn over it here.
+     * full_redraw is still set while on_draw_desktop runs (cleared at the end
      * of comp_composite's full-redraw branch), so it tells topbar_draw whether
      * the desktop background behind the bar changed → recompute the cached blur. */
     topbar_draw(s, w, s_clock_str, s_volume, s_comp ? s_comp->full_redraw : 1);
@@ -470,10 +430,10 @@ main(void)
     if (lumen_srv_fd < 0)
         dprintf(2, "[LUMEN] warning: could not open /run/lumen.sock\n");
 
-    /* Load wallpaper if one is installed; otherwise the compositor draws a
-     * vertical gradient with the Aegis logo centered (the default desktop). */
+    /* The desktop background is the installed wallpaper image
+     * (/usr/share/wallpaper.raw, shipped with this package); the compositor
+     * falls back to a plain gradient only if it is missing. */
     load_wallpaper(&comp.wallpaper);
-    load_desktop_logo();
 
     /* Register INVOKE handler so external dock can spawn built-ins. */
     lumen_server_set_invoke_handler(invoke_handler);

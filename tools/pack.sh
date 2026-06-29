@@ -7,7 +7,7 @@
 #   bin/lumen                       the compositor (stripped)
 #   etc/aegis/caps.d/lumen          its cap policy (service FB THREAD_CREATE PROC_READ POWER)
 #   usr/share/fonts/*.ttf           toolkit fonts (every GUI app needs these)
-#   usr/share/{logo,claude}.raw     desktop logo assets
+#   usr/share/{logo,claude,wallpaper}.raw  logo + desktop wallpaper
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -25,7 +25,7 @@ fi
 chmod 0755 "$STAGE/bin/lumen"
 cp pkg/caps.d/lumen "$STAGE/etc/aegis/caps.d/lumen"
 cp assets/*.ttf "$STAGE/usr/share/fonts/"
-for raw in logo claude; do
+for raw in logo claude wallpaper; do
     [ -f "assets/$raw.raw" ] && cp "assets/$raw.raw" "$STAGE/usr/share/$raw.raw"
 done
 printf 'id=lumen\nname=Lumen Compositor\nversion=%s\nclass=system\n' "$VER" > "$STAGE/manifest"
