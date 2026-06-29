@@ -1,4 +1,4 @@
-/* about.c -- "About Aegis" information window for Lumen compositor.
+/* about.c -- "About AspisOS" information window for Lumen compositor.
  *
  * Displays system version, hardware info from /proc, and credits.
  * Renders as a frosted Glyph window with labels.
@@ -160,7 +160,7 @@ about_render(glyph_window_t *win)
 
     int y = cy + 16;
 
-    /* Aegis logo (scaled to 25% — ~218x56) */
+    /* AspisOS logo (scaled to 25% — ~218x56) */
     if (s_logo_px && s_logo_w > 0) {
         int dw = s_logo_w / 4;
         int dh = s_logo_h / 4;
@@ -171,7 +171,7 @@ about_render(glyph_window_t *win)
 
     /* Version */
     if (g_font_ui) {
-        const char *ver = "Version " AEGIS_VERSION "  \"Ambient Argus\"";
+        const char *ver = "Version " AEGIS_VERSION;
         int tw = font_text_width(g_font_ui, 16, ver);
         font_draw_text(s, g_font_ui, 16, cx + (cw - tw) / 2, y, ver, 0x00B0B0C0);
     } else {
@@ -298,7 +298,7 @@ about_create(int screen_w, int screen_h)
     if (!s_claude_px)
         load_claude_logo();
 
-    glyph_window_t *win = glyph_window_create("About Aegis", 400, 500);
+    glyph_window_t *win = glyph_window_create("About AspisOS", 400, 500);
     if (!win) return NULL;
 
     win->on_render = about_render;
