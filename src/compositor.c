@@ -632,7 +632,7 @@ blit_window_to_back(surface_t *back, glyph_window_t *win, int mode)
                 /* Widget window: dark translucent glass (not white) */
                 draw_blend_rect(back, win->x + bd, win->y + tb + bd,
                                 win->client_w, win->client_h,
-                                0x00181828, 150);
+                                0x00181828, 190);
             }
 
             /* 4. Subtle border around entire window */

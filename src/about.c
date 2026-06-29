@@ -181,7 +181,7 @@ about_render(glyph_window_t *win)
 
     /* Tagline */
     if (g_font_ui) {
-        const char *tag = "Capability-based POSIX-compatible kernel";
+        const char *tag = "Capability-secure, POSIX-compatible OS";
         int tw = font_text_width(g_font_ui, 14, tag);
         font_draw_text(s, g_font_ui, 14, cx + (cw - tw) / 2, y, tag, 0x00808898);
     }
