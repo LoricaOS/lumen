@@ -12,7 +12,7 @@ set -eu
 cd "$(dirname "$0")/.."
 
 VER="$(cat VERSION)"
-KEY="${HERALD_KEY:?set HERALD_KEY to the package signing key}"
+KEY="${HERALD_KEY:-}"
 STRIP="${STRIP:-strip}"
 
 STAGE="$(mktemp -d)"
@@ -32,5 +32,5 @@ printf 'id=lumen\nname=Lumen Compositor\nversion=%s\nclass=system\n' "$VER" > "$
 
 # manifest first so herald reads it without scanning; uncompressed ustar.
 tar --format=ustar -C "$STAGE" -cf lumen.hpkg manifest bin etc usr
-openssl dgst -sha256 -sign "$KEY" -out lumen.hpkg.sig lumen.hpkg
+if [ -n "$KEY" ]; then openssl dgst -sha256 -sign "$KEY" -out lumen.hpkg.sig lumen.hpkg; else rm -f lumen.hpkg.sig; echo "[lumen] unsigned (no HERALD_KEY set)"; fi
 echo "[lumen] lumen.hpkg $VER ($(wc -c < lumen.hpkg) bytes) + .sig"
