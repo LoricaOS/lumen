@@ -77,7 +77,7 @@ clipboard_set(const char *text, int len)
 #define MENU_ITEMS           10
 
 static const char *menu_labels[] = {
-    "About Aegis", "Applications", "Files", "Text Editor", "Calculator",
+    "About AspisOS", "Applications", "Files", "Text Editor", "Calculator",
     "Settings...", "Lock Screen", "---", "Restart", "Power Off"
 };
 
