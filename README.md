@@ -1,8 +1,8 @@
 # lumen
 
-**lumen** is the compositor and display server for [AspisOS](https://github.com/AspisOS),
+**lumen** is the compositor and display server for [LoricaOS](https://github.com/LoricaOS),
 a capability-based, no-ambient-authority x86-64 operating system built on the
-from-scratch [Aegis](https://github.com/AspisOS/Aegis) kernel.
+from-scratch [Aegis](https://github.com/LoricaOS/Aegis) kernel.
 
 lumen owns the screen. It maps the framebuffer, draws the desktop, and is the
 single process every graphical application talks to in order to get a window.
@@ -13,24 +13,24 @@ composites every client's surface, its own built-in surfaces (the top bar, the
 "Aegis" menu, the dropdown terminal, the About window), and the cursor into the
 framebuffer.
 
-This repository is a **standalone AspisOS component**. It does not vendor the
+This repository is a **standalone LoricaOS component**. It does not vendor the
 GUI toolkit; it fetches a pinned build artifact of the
-[glyph](https://github.com/AspisOS/glyph) toolkit (`GLYPH_VERSION`), compiles
-against it, and packs a signed [herald](https://github.com/AspisOS) system
+[glyph](https://github.com/LoricaOS/glyph) toolkit (`GLYPH_VERSION`), compiles
+against it, and packs a signed [herald](https://github.com/LoricaOS) system
 package, `lumen.hpkg`.
 
 ---
 
 ## Where lumen fits
 
-AspisOS is decomposed into independent repositories:
+LoricaOS is decomposed into independent repositories:
 
 | Repo | Role |
 |------|------|
-| `AspisOS/Aegis` | The kernel. Provides the framebuffer mapping, PTYs, `AF_UNIX` sockets, `memfd`, the capability model, and the syscalls lumen uses. |
-| `AspisOS/AspisOS` | The OS: userland, rootfs, ISO/installer. Assembles the components into a bootable system. |
-| `AspisOS/glyph` | The GUI toolkit. Provides window/surface primitives, the software renderer (`draw_*`, `font_*`), the terminal emulator core (`glyph_term`), theme/preferences, the `/apps` bundle registry, **and the client side of lumen's window protocol** (`lumen_proto.h`, `lumen_client.h`). |
-| `AspisOS/lumen` | **This repo.** The compositor/display server. The foundational graphical component. |
+| `LoricaOS/Aegis` | The kernel. Provides the framebuffer mapping, PTYs, `AF_UNIX` sockets, `memfd`, the capability model, and the syscalls lumen uses. |
+| `LoricaOS/LoricaOS` | The OS: userland, rootfs, ISO/installer. Assembles the components into a bootable system. |
+| `LoricaOS/glyph` | The GUI toolkit. Provides window/surface primitives, the software renderer (`draw_*`, `font_*`), the terminal emulator core (`glyph_term`), theme/preferences, the `/apps` bundle registry, **and the client side of lumen's window protocol** (`lumen_proto.h`, `lumen_client.h`). |
+| `LoricaOS/lumen` | **This repo.** The compositor/display server. The foundational graphical component. |
 
 Everything graphical depends on lumen. The desktop session manager (Bastion)
 launches lumen; the dock, application launcher, file manager, editor,
@@ -157,7 +157,7 @@ paths). Night Light, when enabled, is applied as a warm tint during the flip.
 
 ## The capability model
 
-AspisOS has **no ambient authority**. A process can do nothing to the system
+LoricaOS has **no ambient authority**. A process can do nothing to the system
 except through capabilities granted to it by kernel policy at exec time; there is
 no implicit "root can do anything". lumen's capability set is declared in
 `pkg/caps.d/lumen` and installed to `/etc/aegis/caps.d/lumen`:
@@ -186,7 +186,7 @@ lumen builds with a musl cross-compiler against the prebuilt glyph toolkit.
 
 Requirements:
 
-- `MUSL_CC` — a musl `gcc` (defaults to `musl-gcc` on `PATH`). AspisOS userland
+- `MUSL_CC` — a musl `gcc` (defaults to `musl-gcc` on `PATH`). LoricaOS userland
   is built against musl.
 - `HERALD_KEY` — the package signing key (ECDSA P-256 private key). Required to
   pack `lumen.hpkg`.
@@ -204,7 +204,7 @@ The build (`Makefile`) does three things:
 1. **Fetch the toolkit.** `tools/fetch-glyph.sh $(GLYPH_VERSION) toolkit`
    downloads `glyph-<ver>.tar.gz` from the glyph repo's releases (or uses the
    cached copy under `vendor/`) and unpacks its `include/` and `lib/` into
-   `toolkit/`. This mirrors how AspisOS fetches the kernel artifact.
+   `toolkit/`. This mirrors how LoricaOS fetches the kernel artifact.
 2. **Compile.** `$(MUSL_CC)` builds the `src/*.c` sources against
    `toolkit/include` and links `toolkit/lib`'s `-lcitadel -lglyph` into
    `lumen.elf`. The version string is injected via `-DAEGIS_VERSION`.
@@ -285,6 +285,6 @@ Build outputs (`lumen.elf`, `lumen.hpkg`, `lumen.hpkg.sig`), the fetched
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the compositing pipeline,
   the protocol exchange, input/cursor handling, the dropdown terminal, and the
   About window, in detail.
-- [`AspisOS/glyph`](https://github.com/AspisOS/glyph) — the toolkit lumen builds
+- [`LoricaOS/glyph`](https://github.com/LoricaOS/glyph) — the toolkit lumen builds
   against and the home of the window protocol.
-- [`AspisOS/Aegis`](https://github.com/AspisOS/Aegis) — the kernel.
+- [`LoricaOS/Aegis`](https://github.com/LoricaOS/Aegis) — the kernel.

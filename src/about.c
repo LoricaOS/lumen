@@ -1,4 +1,4 @@
-/* about.c -- "About AspisOS" information window for Lumen compositor.
+/* about.c -- "About LoricaOS" information window for Lumen compositor.
  *
  * Displays system version, hardware info from /proc, and credits.
  * Renders as a frosted Glyph window with labels.
@@ -160,7 +160,7 @@ about_render(glyph_window_t *win)
 
     int y = cy + 16;
 
-    /* AspisOS logo (scaled to 25% — ~218x56) */
+    /* LoricaOS logo (scaled to 25% — ~218x56) */
     if (s_logo_px && s_logo_w > 0) {
         int dw = s_logo_w / 4;
         int dh = s_logo_h / 4;
@@ -298,7 +298,7 @@ about_create(int screen_w, int screen_h)
     if (!s_claude_px)
         load_claude_logo();
 
-    glyph_window_t *win = glyph_window_create("About AspisOS", 400, 500);
+    glyph_window_t *win = glyph_window_create("About LoricaOS", 400, 500);
     if (!win) return NULL;
 
     win->on_render = about_render;

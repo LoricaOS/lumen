@@ -1,4 +1,4 @@
-# lumen — the AspisOS compositor / display server.
+# lumen — the LoricaOS compositor / display server.
 #
 # Standalone component repo: it fetches a pinned glyph toolkit artifact (libs +
 # headers) and builds against it, then packs a signed herald system package

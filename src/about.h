@@ -1,4 +1,4 @@
-/* about.h -- "About AspisOS" information window */
+/* about.h -- "About LoricaOS" information window */
 #ifndef LUMEN_ABOUT_H
 #define LUMEN_ABOUT_H
 
