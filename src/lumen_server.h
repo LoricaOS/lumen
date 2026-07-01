@@ -15,6 +15,10 @@ void lumen_proxy_notify_focus(glyph_window_t *win, int focused);
  * sides remap. No-op for non-proxy/in-process windows. */
 void lumen_proxy_request_resize(glyph_window_t *win, int cw, int ch);
 
+/* Push the open-window list to the dock (panel clients). The compositor calls
+ * this once per frame when comp->windows_changed is set. */
+void lumen_server_push_window_list(compositor_t *comp);
+
 /* Drag-and-drop event delivery to proxy windows (called from the
  * compositor while it brokers a drag). x,y are window-local; the
  * helpers convert to client-area coords like mouse events do. */

@@ -603,6 +603,12 @@ main(void)
                 activity = 1;
         }
 
+        /* Push the open-window list to the dock when it changed. */
+        if (comp.windows_changed) {
+            comp.windows_changed = 0;
+            lumen_server_push_window_list(&comp);
+        }
+
         /* Poll keyboard (stdin, raw mode, non-blocking via VMIN=0) */
         n = read(0, &kbd_byte, 1);
         if (n == 1 && s_input_frozen) {

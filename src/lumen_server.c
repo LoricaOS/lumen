@@ -27,6 +27,7 @@ typedef struct {
     proxy_window_t *windows[LUMEN_MAX_WINDOWS_PER_CLIENT];
     int             nwindows;
     uint32_t        next_id;
+    int             is_panel;   /* created a panel (the dock) → gets the window list */
 } lumen_client_t;
 
 struct proxy_window {
@@ -353,6 +354,8 @@ static int handle_create_common(compositor_t *comp, lumen_client_t *cli,
     /* Panels are system chrome (the dock) — always on top; regular windows
      * opt in via LUMEN_WIN_FLAG_ONTOP. The fullscreen launcher stays normal. */
     pw->win->always_on_top = (style == WSTYLE_PANEL || ontop) ? 1 : 0;
+    if (style == WSTYLE_PANEL)
+        cli->is_panel = 1;   /* the dock wants the window list */
 
     /* Created but not yet drawn: stay unpresented until the first DAMAGE so
      * the uninitialized (zero) buffer never flashes — fixes the launcher's
@@ -647,6 +650,96 @@ void lumen_proxy_request_resize(glyph_window_t *win, int cw, int ch)
     write(pw->client->fd, &ev,  sizeof(ev));
 }
 
+/* Send the open-window list to every panel client (the dock). Called once per
+ * frame when comp->windows_changed. Includes chromed windows that are visible or
+ * minimized (skips the dock/launcher, which are chromeless). */
+void lumen_server_push_window_list(compositor_t *comp)
+{
+    lumen_window_info_t items[MAX_WINDOWS];
+    int n = 0;
+    for (int i = 0; i < comp->nwindows && n < MAX_WINDOWS; i++) {
+        glyph_window_t *w = comp->windows[i];
+        if (w->chromeless || (!w->visible && !w->minimized))
+            continue;
+        lumen_window_info_t *it = &items[n++];
+        memset(it, 0, sizeof(*it));
+        it->gid       = w->gid;
+        it->minimized = w->minimized ? 1 : 0;
+        it->focused   = (w == comp->focused) ? 1 : 0;
+        snprintf(it->title, sizeof(it->title), "%s", w->title);
+    }
+    lumen_msg_hdr_t hdr = { LUMEN_EV_WINDOW_LIST,
+                            (uint32_t)(n * sizeof(lumen_window_info_t)) };
+    for (int i = 0; i < s_ncli; i++) {
+        lumen_client_t *cli = s_clients[i];
+        if (!cli || !cli->is_panel)
+            continue;
+        write(cli->fd, &hdr, sizeof(hdr));
+        if (n)
+            write(cli->fd, items, hdr.len);
+    }
+}
+
+static int handle_activate_window(compositor_t *comp, lumen_client_t *cli,
+                                  const lumen_activate_window_t *req)
+{
+    (void)cli;
+    comp_activate_window(comp, req->gid);
+    return 1;
+}
+
+/* Resize the client's own (chromeless) panel to w×h. Unlike RESIZE_BUFFER this
+ * has no chrome surface — the compositor reads the shared buffer directly via
+ * blit_src — so we swap the shared buffer + re-point blit_src, update the
+ * dimensions, re-center at the bottom, and reply with the new memfd. */
+static int handle_resize_self(compositor_t *comp, lumen_client_t *cli,
+                              const lumen_resize_self_t *req)
+{
+    proxy_window_t *pw = NULL;
+    for (int i = 0; i < cli->nwindows; i++)
+        if (cli->windows[i]->win->chromeless) { pw = cli->windows[i]; break; }
+    if (!pw) goto err;
+
+    int nw = (int)req->width, nh = (int)req->height;
+    if (nw < 1) nw = 1;
+    if (nh < 1) nh = 1;
+    if (nw > comp->fb.w) nw = comp->fb.w;
+    if (nh > comp->fb.h) nh = comp->fb.h;
+
+    size_t nbuf = (size_t)nw * nh * sizeof(uint32_t);
+    int memfd = memfd_create("lumen_win", 0);
+    if (memfd < 0) goto err;
+    if (ftruncate(memfd, (off_t)nbuf) < 0) { close(memfd); goto err; }
+    void *nshared = mmap(NULL, nbuf, PROT_READ, MAP_SHARED, memfd, 0);
+    if (nshared == MAP_FAILED) { close(memfd); goto err; }
+
+    size_t obuf = (size_t)pw->win->client_w * pw->win->client_h * sizeof(uint32_t);
+    munmap(pw->shared, obuf);
+    close(pw->memfd);
+    pw->shared = nshared;
+    pw->memfd  = memfd;
+    pw->win->blit_src = pw->shared;   /* chromeless: compositor reads this */
+    pw->win->client_w = nw; pw->win->client_h = nh;
+    pw->win->surf_w   = nw; pw->win->surf_h   = nh;
+    pw->win->x = (comp->fb.w - nw) / 2;      /* re-center like a panel */
+    pw->win->y = comp->fb.h - nh - 10;
+
+    lumen_window_created_t reply = {
+        .status = 0, .window_id = pw->id,
+        .width = (uint32_t)nw, .height = (uint32_t)nh,
+        .x = pw->win->x, .y = pw->win->y,
+    };
+    send_window_reply(cli->fd, &reply, memfd);
+    comp->full_redraw = 1;
+    return 1;
+
+err: {
+        lumen_window_created_t er = { (uint32_t)EIO, 0, 0, 0, 0, 0 };
+        send_window_reply(cli->fd, &er, -1);
+        return 0;
+    }
+}
+
 /* ── Client read + hangup ───────────────────────────────────────────── */
 
 static int lumen_server_read(compositor_t *comp, lumen_client_t *cli)
@@ -717,6 +810,18 @@ static int lumen_server_read(compositor_t *comp, lumen_client_t *cli)
         lumen_resize_buffer_t req;
         if (read(cli->fd, &req, sizeof(req)) != (ssize_t)sizeof(req)) return -1;
         return handle_resize_buffer(comp, cli, &req);
+    }
+    case LUMEN_OP_ACTIVATE_WINDOW: {
+        if (hdr.len != (uint32_t)sizeof(lumen_activate_window_t)) return -1;
+        lumen_activate_window_t req;
+        if (read(cli->fd, &req, sizeof(req)) != (ssize_t)sizeof(req)) return -1;
+        return handle_activate_window(comp, cli, &req);
+    }
+    case LUMEN_OP_RESIZE_SELF: {
+        if (hdr.len != (uint32_t)sizeof(lumen_resize_self_t)) return -1;
+        lumen_resize_self_t req;
+        if (read(cli->fd, &req, sizeof(req)) != (ssize_t)sizeof(req)) return -1;
+        return handle_resize_self(comp, cli, &req);
     }
     default: {
         char tmp[256];

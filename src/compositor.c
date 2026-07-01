@@ -211,6 +211,9 @@ comp_add_window(compositor_t *c, glyph_window_t *win)
         c->windows[i] = c->windows[i - 1];
     c->windows[pos] = win;
     c->nwindows++;
+    if (win->gid == 0)
+        win->gid = ++c->next_gid;
+    c->windows_changed = 1;
     c->focused = win;
     win->focused_window = 1;
     c->full_redraw = 1;
@@ -263,6 +266,7 @@ comp_remove_window(compositor_t *c, glyph_window_t *win)
 
     glyph_window_destroy(win);
     c->full_redraw = 1;
+    c->windows_changed = 1;
 }
 
 void
@@ -295,6 +299,7 @@ comp_raise_window(compositor_t *c, glyph_window_t *win)
             c->windows[i] = c->windows[i - 1];
     c->windows[target] = win;
     c->full_redraw = 1;
+    c->windows_changed = 1;   /* focus/stacking changed → refresh the dock */
 }
 
 glyph_window_t *
@@ -1118,6 +1123,64 @@ hit_maximize_button(glyph_window_t *win, int mx, int my)
     return dx * dx + dy * dy <= 10 * 10;
 }
 
+/* Hit-test the yellow (minimize) traffic light — middle circle, +22 from red. */
+static int
+hit_minimize_button(glyph_window_t *win, int mx, int my)
+{
+    int cx = win->x + GLYPH_BORDER_WIDTH + 8 + 7 + 22;
+    int cy = win->y + (GLYPH_TITLEBAR_HEIGHT + GLYPH_BORDER_WIDTH) / 2;
+    int dx = mx - cx, dy = my - cy;
+    return dx * dx + dy * dy <= 10 * 10;
+}
+
+/* Minimize a window to the dock: hide it (clear visible so every composite/
+ * hit-test skip catches it) but keep it alive; `minimized` tags it for the dock.
+ * Refocuses the topmost remaining app window. */
+void
+comp_minimize_window(compositor_t *c, glyph_window_t *win)
+{
+    if (!win || win->minimized || win->chromeless)
+        return;
+    win->minimized = 1;
+    win->visible = 0;
+    if (c->focused == win) {
+        win->focused_window = 0;
+        c->focused = NULL;
+        for (int i = c->nwindows - 1; i >= 0; i--) {
+            glyph_window_t *w = c->windows[i];
+            if (w->visible && !w->minimized && !w->chromeless) {
+                c->focused = w;
+                w->focused_window = 1;
+                break;
+            }
+        }
+    }
+    c->windows_changed = 1;
+    c->full_redraw = 1;
+}
+
+/* Restore + raise + focus the window with this global id (dock click). */
+void
+comp_activate_window(compositor_t *c, unsigned gid)
+{
+    for (int i = 0; i < c->nwindows; i++) {
+        glyph_window_t *w = c->windows[i];
+        if (w->gid != gid)
+            continue;
+        w->minimized = 0;
+        w->visible = 1;
+        if (c->focused && c->focused != w)
+            c->focused->focused_window = 0;
+        c->focused = w;
+        w->focused_window = 1;
+        comp_raise_window(c, w);
+        glyph_window_mark_all_dirty(w);
+        c->windows_changed = 1;
+        c->full_redraw = 1;
+        return;
+    }
+}
+
 /* Maximize a resizable window to the work area, or restore prior geometry.
  * Position is set immediately; the client re-renders at the new size via the
  * resize round-trip (lumen_proxy_request_resize → EV_RESIZED). */
@@ -1425,6 +1488,13 @@ comp_handle_mouse(compositor_t *c, uint8_t buttons, int16_t dx, int16_t dy,
             /* Green (maximize) button — resizable windows only. */
             if (win->resizable && hit_maximize_button(win, c->cursor_x, c->cursor_y)) {
                 comp_toggle_maximize(c, win);
+                c->prev_buttons = buttons;
+                return;
+            }
+
+            /* Yellow (minimize) button — any chromed window. */
+            if (!win->chromeless && hit_minimize_button(win, c->cursor_x, c->cursor_y)) {
+                comp_minimize_window(c, win);
                 c->prev_buttons = buttons;
                 return;
             }

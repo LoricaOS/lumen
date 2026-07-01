@@ -65,6 +65,11 @@ typedef struct {
 
     /* Overlay callback -- called after windows, before flip (for frosted glass dock) */
     void (*on_draw_overlay)(surface_t *back, int w, int h);
+
+    /* Global window ids + a dirty flag so the dock gets an updated window list
+     * (open/minimized/focused) once per frame when the set or its state changes. */
+    unsigned next_gid;
+    int      windows_changed;
 } compositor_t;
 
 void comp_init(compositor_t *c, uint32_t *fb, uint32_t *backbuf, int w, int h, int pitch);
@@ -79,6 +84,10 @@ void comp_toggle_maximize(compositor_t *c, glyph_window_t *win);
 /* Snap a resizable window to a screen edge: 0=left half, 1=right half,
  * 2=maximize (top). No-op for non-resizable windows. */
 void comp_snap_window(compositor_t *c, glyph_window_t *win, int edge);
+/* Minimize a window to the dock (hide it, keep it alive). */
+void comp_minimize_window(compositor_t *c, glyph_window_t *win);
+/* Restore + raise + focus the window with this global id (from the dock). */
+void comp_activate_window(compositor_t *c, unsigned gid);
 glyph_window_t *comp_window_at(compositor_t *c, int x, int y);
 void comp_add_dirty(compositor_t *c, glyph_rect_t r);
 int comp_composite(compositor_t *c);
