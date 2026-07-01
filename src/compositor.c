@@ -1,6 +1,6 @@
 /* compositor.c -- Lumen window management and dirty-rect compositing */
 #include "compositor.h"
-#include "cursor.h"
+#include <glyph_cursor.h>
 #include "lumen_server.h"
 #include <glyph.h>
 #include <font.h>
@@ -1175,8 +1175,8 @@ comp_handle_mouse(compositor_t *c, uint8_t buttons, int16_t dx, int16_t dy,
 
     /* If cursor moved, add old and new cursor rects as dirty */
     if (c->cursor_x != old_cx || c->cursor_y != old_cy) {
-        glyph_rect_t old_r = { old_cx, old_cy, CURSOR_W, CURSOR_H };
-        glyph_rect_t new_r = { c->cursor_x, c->cursor_y, CURSOR_W, CURSOR_H };
+        glyph_rect_t old_r = { old_cx, old_cy, GLYPH_CURSOR_W, GLYPH_CURSOR_H };
+        glyph_rect_t new_r = { c->cursor_x, c->cursor_y, GLYPH_CURSOR_W, GLYPH_CURSOR_H };
         comp_add_dirty(c, old_r);
         comp_add_dirty(c, new_r);
     }

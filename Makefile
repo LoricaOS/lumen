@@ -14,7 +14,7 @@ GLYPH_VERSION := $(shell cat GLYPH_VERSION)
 
 CFLAGS = -O2 -fno-pie -no-pie -Wl,--build-id=none -Wall \
          -DAEGIS_VERSION=\"$(VERSION)\" -Itoolkit/include
-SRCS = $(addprefix src/, main.c cursor.c compositor.c terminal.c about.c lumen_server.c)
+SRCS = $(addprefix src/, main.c compositor.c terminal.c about.c lumen_server.c)
 
 all: lumen.hpkg
 

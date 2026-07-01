@@ -15,7 +15,7 @@
 #include <glyph.h>
 #include <font.h>
 #include <apps.h>
-#include "cursor.h"
+#include <glyph_cursor.h>
 #include "compositor.h"
 #include <taskbar.h>
 #include <theme.h>
@@ -457,7 +457,7 @@ main(void)
     /* Init compositor and cursor */
     compositor_t comp;
     comp_init(&comp, fb, backbuf, fb_w, fb_h, pitch_px);
-    cursor_init(&comp.fb);
+    glyph_cursor_init(&comp.fb);
     s_comp = &comp;
     s_fb_w = fb_w;
     s_fb_h = fb_h;
@@ -499,7 +499,7 @@ main(void)
      * We need the backbuf result but NOT the FB write. Temporarily swap FB
      * pointer so comp_composite writes to a throwaway buffer. */
     comp.full_redraw = 1;
-    cursor_hide();
+    glyph_cursor_hide();
 
     /* Save real FB pointer, point compositor at backbuf (it'll memcpy backbuf→"fb"
      * which is a no-op since they're the same). Then restore. */
@@ -534,7 +534,7 @@ main(void)
     /* Signal test harness: fade-in complete, desktop is on screen */
     dprintf(2, "[LUMEN] ready\n");
 
-    cursor_show(comp.cursor_x, comp.cursor_y);
+    glyph_cursor_show(comp.cursor_x, comp.cursor_y);
 
     /* Dropdown terminal -- created at startup, starts hidden */
     int dropdown_master_fd = -1;
@@ -1014,13 +1014,13 @@ after_mouse:
                  * Discard any cursor-movement dirty rects so the next frame
                  * with real content changes doesn't carry stale rects. */
                 comp.ndirty = 0;
-                cursor_hide();
-                cursor_show(comp.cursor_x, comp.cursor_y);
+                glyph_cursor_hide();
+                glyph_cursor_show(comp.cursor_x, comp.cursor_y);
                 syscall(515, 0L);   /* present cursor move (no-op on direct FB) */
             } else {
-                cursor_hide();
+                glyph_cursor_hide();
                 comp_composite(&comp);
-                cursor_show(comp.cursor_x, comp.cursor_y);
+                glyph_cursor_show(comp.cursor_x, comp.cursor_y);
                 syscall(515, 0L);   /* present frame */
             }
         }
@@ -1039,9 +1039,9 @@ after_mouse:
                     late = 1;
                 }
                 if (late) {
-                    cursor_hide();
+                    glyph_cursor_hide();
                     comp_composite(&comp);
-                    cursor_show(comp.cursor_x, comp.cursor_y);
+                    glyph_cursor_show(comp.cursor_x, comp.cursor_y);
                     syscall(515, 0L);   /* present late PTY output */
                 }
             }
@@ -1054,9 +1054,9 @@ after_mouse:
             int animating = comp_has_anim(&comp);
             if (animating || was_animating) {
                 comp.full_redraw = 1;
-                cursor_hide();
+                glyph_cursor_hide();
                 comp_composite(&comp);
-                cursor_show(comp.cursor_x, comp.cursor_y);
+                glyph_cursor_show(comp.cursor_x, comp.cursor_y);
                 syscall(515, 0L);
                 was_animating = animating;
                 if (animating) {
