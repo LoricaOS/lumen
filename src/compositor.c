@@ -187,12 +187,30 @@ comp_has_anim(compositor_t *c)
 
 /* ---- Window management ---- */
 
+/* Index of the first always-on-top window, or nwindows if none. On-top windows
+ * are kept as a contiguous group at the end of the z-order (the array tail), so
+ * compositing (draw in order) and hit-testing (scan from the top) both keep
+ * them above normal windows with no special-casing in those loops. */
+static int
+first_ontop(compositor_t *c)
+{
+    for (int i = 0; i < c->nwindows; i++)
+        if (c->windows[i]->always_on_top)
+            return i;
+    return c->nwindows;
+}
+
 void
 comp_add_window(compositor_t *c, glyph_window_t *win)
 {
     if (c->nwindows >= MAX_WINDOWS)
         return;
-    c->windows[c->nwindows++] = win;
+    /* Normal windows insert just below the on-top group; on-top windows append. */
+    int pos = win->always_on_top ? c->nwindows : first_ontop(c);
+    for (int i = c->nwindows; i > pos; i--)
+        c->windows[i] = c->windows[i - 1];
+    c->windows[pos] = win;
+    c->nwindows++;
     c->focused = win;
     win->focused_window = 1;
     c->full_redraw = 1;
@@ -257,12 +275,25 @@ comp_raise_window(compositor_t *c, glyph_window_t *win)
             break;
         }
     }
-    if (idx < 0 || idx == c->nwindows - 1)
+    if (idx < 0)
         return;
 
-    for (int i = idx; i < c->nwindows - 1; i++)
-        c->windows[i] = c->windows[i + 1];
-    c->windows[c->nwindows - 1] = win;
+    /* On-top windows raise to the very top; normal windows raise only to the
+     * top of the normal group (just below the on-top group), so a raised window
+     * never covers the dock/panels. */
+    int target = win->always_on_top ? c->nwindows - 1 : first_ontop(c) - 1;
+    if (target < 0)
+        target = 0;
+    if (idx == target)
+        return;
+
+    if (idx < target)
+        for (int i = idx; i < target; i++)
+            c->windows[i] = c->windows[i + 1];
+    else
+        for (int i = idx; i > target; i--)
+            c->windows[i] = c->windows[i - 1];
+    c->windows[target] = win;
     c->full_redraw = 1;
 }
 
@@ -1311,6 +1342,10 @@ comp_handle_mouse(compositor_t *c, uint8_t buttons, int16_t dx, int16_t dy,
             glyph_rect_t old_r = win_screen_rect(c->drag_win);
             c->drag_win->x = c->cursor_x - c->drag_dx;
             c->drag_win->y = c->cursor_y - c->drag_dy;
+            /* Don't let a window slide up under the top bar — clamp its top
+             * edge to just below it. */
+            if (c->drag_win->y < WORK_TOP_RESERVE)
+                c->drag_win->y = WORK_TOP_RESERVE;
             glyph_rect_t new_r = win_screen_rect(c->drag_win);
             comp_add_dirty(c, old_r);
             comp_add_dirty(c, new_r);

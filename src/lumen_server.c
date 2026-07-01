@@ -284,7 +284,7 @@ static glyph_window_t *make_chromeless_window(int w, int h, int want_surface)
  * geometry, chrome, and focus behavior (WSTYLE_*). */
 static int handle_create_common(compositor_t *comp, lumen_client_t *cli,
                                 int w, int h, const char *title, int style,
-                                int resizable)
+                                int resizable, int ontop)
 {
     if (cli->nwindows >= LUMEN_MAX_WINDOWS_PER_CLIENT)
         goto err_reply;
@@ -350,6 +350,9 @@ static int handle_create_common(compositor_t *comp, lumen_client_t *cli,
 
     /* Chromeless panels/launcher can't resize; only chromed windows opt in. */
     pw->win->resizable = (resizable && !pw->win->chromeless) ? 1 : 0;
+    /* Panels are system chrome (the dock) — always on top; regular windows
+     * opt in via LUMEN_WIN_FLAG_ONTOP. The fullscreen launcher stays normal. */
+    pw->win->always_on_top = (style == WSTYLE_PANEL || ontop) ? 1 : 0;
 
     /* Created but not yet drawn: stay unpresented until the first DAMAGE so
      * the uninitialized (zero) buffer never flashes — fixes the launcher's
@@ -450,15 +453,16 @@ static int handle_create_window(compositor_t *comp, lumen_client_t *cli,
     int style = (req->flags & LUMEN_WIN_FLAG_FULLSCREEN)
                     ? WSTYLE_FULLSCREEN : WSTYLE_NORMAL;
     int resizable = (req->flags & LUMEN_WIN_FLAG_RESIZABLE) ? 1 : 0;
+    int ontop     = (req->flags & LUMEN_WIN_FLAG_ONTOP) ? 1 : 0;
     return handle_create_common(comp, cli, req->width, req->height,
-                                req->title, style, resizable);
+                                req->title, style, resizable, ontop);
 }
 
 static int handle_create_panel(compositor_t *comp, lumen_client_t *cli,
                                  const lumen_create_panel_t *req)
 {
     return handle_create_common(comp, cli, req->width, req->height, NULL,
-                                WSTYLE_PANEL, 0);
+                                WSTYLE_PANEL, 0, 0);
 }
 
 static int handle_invoke(compositor_t *comp, const lumen_invoke_t *req)
