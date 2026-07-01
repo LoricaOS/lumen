@@ -22,7 +22,14 @@ all: lumen.hpkg
 toolkit/include/glyph.h:
 	sh tools/fetch-glyph.sh $(GLYPH_VERSION) toolkit
 
-lumen.elf: $(SRCS) toolkit/include/glyph.h
+# The linked archives are produced by the same fetch (order-only on glyph.h so a
+# clean checkout triggers it). Listing them as prereqs of lumen.elf means a
+# refreshed toolkit lib (e.g. a locally rebuilt libglyph.a) forces a relink —
+# without this, `make` sees lumen.elf newer than its .c/.h deps and never relinks
+# against the new archive (the stale-link trap).
+toolkit/lib/libglyph.a toolkit/lib/libcitadel.a: | toolkit/include/glyph.h
+
+lumen.elf: $(SRCS) toolkit/include/glyph.h toolkit/lib/libglyph.a toolkit/lib/libcitadel.a
 	$(MUSL_CC) $(CFLAGS) -o $@ $(SRCS) -Ltoolkit/lib -lcitadel -lglyph
 
 lumen.hpkg: lumen.elf
