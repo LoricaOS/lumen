@@ -22,6 +22,7 @@
 #include "terminal.h"
 #include "about.h"
 #include "lumen_server.h"
+#include <image_load.h>
 
 typedef struct {
     uint64_t addr;
@@ -205,23 +206,21 @@ menu_hit_test(int mx, int my)
 
 /* ---- Wallpaper loading ---- */
 
-static void
-load_wallpaper(wallpaper_t *wp)
+/* Our bespoke wallpaper blob: [w:u32][h:u32] then w*h BGRA pixels (little-endian
+ * uint32 = 0x00RRGGBB, the framebuffer's layout). Returns 0 on success. */
+static int
+load_wallpaper_raw(wallpaper_t *wp, const char *path)
 {
-    wp->pixels = NULL;
-    wp->w = 0;
-    wp->h = 0;
-
-    int fd = open("/usr/share/wallpaper.raw", O_RDONLY);
+    int fd = open(path, O_RDONLY);
     if (fd < 0)
-        return;
+        return -1;
 
     uint32_t hdr[2];
     ssize_t n = read(fd, hdr, 8);
     if (n != 8 || hdr[0] == 0 || hdr[1] == 0 ||
         hdr[0] > 8192 || hdr[1] > 8192) {
         close(fd);
-        return;
+        return -1;
     }
 
     uint32_t w = hdr[0], h = hdr[1];
@@ -229,7 +228,7 @@ load_wallpaper(wallpaper_t *wp)
     uint32_t *px = malloc(sz);
     if (!px) {
         close(fd);
-        return;
+        return -1;
     }
 
     /* Read all pixel data (may need multiple reads) */
@@ -244,12 +243,50 @@ load_wallpaper(wallpaper_t *wp)
 
     if (total < sz) {
         free(px);
-        return;
+        return -1;
     }
 
     wp->pixels = px;
     wp->w = w;
     wp->h = h;
+    return 0;
+}
+
+/* Decode one wallpaper file. .raw uses the bespoke blob above; png/jpg/bmp go
+ * through glyph's stb_image loader (both yield 0x00RRGGBB). Returns 0 / -1. */
+static int
+load_wallpaper_file(wallpaper_t *wp, const char *path)
+{
+    size_t n = strlen(path);
+    if (n >= 4 && strcmp(path + n - 4, ".raw") == 0)
+        return load_wallpaper_raw(wp, path);
+
+    glyph_pixbuf_t pb;
+    if (glyph_pixbuf_load_file(path, &pb) != 0 || !pb.px)
+        return -1;
+    wp->pixels = pb.px;               /* take ownership; freed with free() */
+    wp->w = (uint32_t)pb.w;
+    wp->h = (uint32_t)pb.h;
+    return 0;
+}
+
+/* Desktop wallpaper (preset 0). A user-dropped image wins over the shipped .raw,
+ * and any stb-supported format works. First candidate that decodes is used. */
+static void
+load_wallpaper(wallpaper_t *wp)
+{
+    wp->pixels = NULL;
+    wp->w = 0;
+    wp->h = 0;
+
+    static const char *const cands[] = {
+        "/usr/share/wallpaper.png",  "/usr/share/wallpaper.jpg",
+        "/usr/share/wallpaper.jpeg", "/usr/share/wallpaper.bmp",
+        "/usr/share/wallpaper.raw",
+    };
+    for (size_t i = 0; i < sizeof(cands) / sizeof(cands[0]); i++)
+        if (load_wallpaper_file(wp, cands[i]) == 0)
+            return;
 }
 
 /* ---- Compositor globals (used by the invoke handler) ---- */
