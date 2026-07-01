@@ -23,10 +23,12 @@ build_sprite(void)
     memset(s_sprite, 0, sizeof(s_sprite));
 
     /* Arrow shape: each row defines how many pixels wide the arrow is.
-     * Row 0 = tip (1px), widening to row 11 (12px), then narrowing
-     * for the tail section. */
+     * Row 0 = tip (1px), widening 1px/row to row 11 (12px) — a clean 45°
+     * right edge — then a 4px notch and a straight 45° tail narrowing back
+     * to a 1px point at the base. Both diagonal edges are exact 45° lines so
+     * the silhouette is symmetric with no single-pixel jags. */
     static const int widths[CH] = {
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 7, 5, 6, 5, 4, 3, 2, 1
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 8, 7, 6, 5, 4, 3, 2, 1
     };
 
     /* Pass 1: draw shadow (offset 1,1, dark translucent) */
