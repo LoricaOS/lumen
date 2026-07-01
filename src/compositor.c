@@ -101,6 +101,16 @@ desktop_bg_at(int y, int h)
     }
 }
 
+/* Only preset 0 ("LoricaOS") is backed by the brand bitmap; presets 1..3 are the
+ * procedural gradients in desktop_bg_at. Gating the blit on the live pref is what
+ * makes the Settings wallpaper picker actually switch backdrops (the image would
+ * otherwise always mask the presets). full_redraw is forced on pref change. */
+static int
+use_wallpaper_image(compositor_t *c)
+{
+    return c->wallpaper.pixels != NULL && glyph_theme_wallpaper() == 0;
+}
+
 /* Check if screen point is inside a window's total area */
 static int
 point_in_window(glyph_window_t *win, int px, int py)
@@ -810,7 +820,7 @@ comp_composite(compositor_t *c)
             c->windows[i]->blur_cache_valid = 0;
 
         /* Desktop background — wallpaper or solid fill */
-        if (c->wallpaper.pixels) {
+        if (use_wallpaper_image(c)) {
             if ((int)c->wallpaper.w == c->back.w &&
                 (int)c->wallpaper.h == c->back.h) {
                 /* Exact match — memcpy rows (pitch may differ from width) */
@@ -896,7 +906,7 @@ comp_composite(compositor_t *c)
         glyph_rect_t dr = saved_rects[ri];
 
         /* Redraw background in this dirty rect */
-        if (c->wallpaper.pixels) {
+        if (use_wallpaper_image(c)) {
             if ((int)c->wallpaper.w == c->back.w &&
                 (int)c->wallpaper.h == c->back.h) {
                 int dy0 = dr.y < 0 ? 0 : dr.y;
