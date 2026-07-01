@@ -283,7 +283,8 @@ static glyph_window_t *make_chromeless_window(int w, int h, int want_surface)
  * lumen_window_created_t reply with SCM_RIGHTS memfd. style selects
  * geometry, chrome, and focus behavior (WSTYLE_*). */
 static int handle_create_common(compositor_t *comp, lumen_client_t *cli,
-                                int w, int h, const char *title, int style)
+                                int w, int h, const char *title, int style,
+                                int resizable)
 {
     if (cli->nwindows >= LUMEN_MAX_WINDOWS_PER_CLIENT)
         goto err_reply;
@@ -346,6 +347,9 @@ static int handle_create_common(compositor_t *comp, lumen_client_t *cli,
         dprintf(2, "[LUMEN-SRV] window alloc failed (style=%d)\n", style);
         free(pw); munmap(shared, bufsz); close(memfd); goto err_reply;
     }
+
+    /* Chromeless panels/launcher can't resize; only chromed windows opt in. */
+    pw->win->resizable = (resizable && !pw->win->chromeless) ? 1 : 0;
 
     /* Created but not yet drawn: stay unpresented until the first DAMAGE so
      * the uninitialized (zero) buffer never flashes — fixes the launcher's
@@ -445,15 +449,16 @@ static int handle_create_window(compositor_t *comp, lumen_client_t *cli,
 {
     int style = (req->flags & LUMEN_WIN_FLAG_FULLSCREEN)
                     ? WSTYLE_FULLSCREEN : WSTYLE_NORMAL;
+    int resizable = (req->flags & LUMEN_WIN_FLAG_RESIZABLE) ? 1 : 0;
     return handle_create_common(comp, cli, req->width, req->height,
-                                req->title, style);
+                                req->title, style, resizable);
 }
 
 static int handle_create_panel(compositor_t *comp, lumen_client_t *cli,
                                  const lumen_create_panel_t *req)
 {
     return handle_create_common(comp, cli, req->width, req->height, NULL,
-                                WSTYLE_PANEL);
+                                WSTYLE_PANEL, 0);
 }
 
 static int handle_invoke(compositor_t *comp, const lumen_invoke_t *req)
@@ -548,6 +553,96 @@ static int handle_destroy_window(compositor_t *comp, lumen_client_t *cli,
     return 0;
 }
 
+/* Send a lumen_window_created_t reply carrying `memfd` via SCM_RIGHTS (the
+ * create/resize reply shape). memfd < 0 sends no ancillary fd (error reply). */
+static void send_window_reply(int fd, const lumen_window_created_t *data, int memfd)
+{
+    lumen_msg_hdr_t rhdr = { 0, sizeof(*data) };
+    struct iovec iov[2] = {
+        { .iov_base = &rhdr, .iov_len = sizeof(rhdr) },
+        { .iov_base = (void *)data, .iov_len = sizeof(*data) },
+    };
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_iov = iov; msg.msg_iovlen = 2;
+
+    char cmsgbuf[CMSG_SPACE(sizeof(int))];
+    if (memfd >= 0) {
+        msg.msg_control = cmsgbuf;
+        msg.msg_controllen = sizeof(cmsgbuf);
+        struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+        cmsg->cmsg_level = SOL_SOCKET;
+        cmsg->cmsg_type  = SCM_RIGHTS;
+        cmsg->cmsg_len   = CMSG_LEN(sizeof(int));
+        memcpy(CMSG_DATA(cmsg), &memfd, sizeof(int));
+        msg.msg_controllen = cmsg->cmsg_len;
+    }
+    if (sendmsg(fd, &msg, 0) < 0)
+        dprintf(2, "[LUMEN-SRV] sendmsg reply failed errno=%d\n", errno);
+}
+
+/* Client acked a LUMEN_EV_RESIZED: hand back a fresh buffer at the new client
+ * size + resize the server-side chrome surface. Reply mirrors CREATE_WINDOW. */
+static int handle_resize_buffer(compositor_t *comp, lumen_client_t *cli,
+                                const lumen_resize_buffer_t *req)
+{
+    proxy_window_t *pw = find_proxy(cli, req->window_id);
+    if (!pw || pw->win->chromeless) goto err;   /* panels/launcher: never resize */
+
+    int nw = (int)req->width, nh = (int)req->height;
+    if (nw < 64) nw = 64;
+    if (nh < 48) nh = 48;
+    if (nw > comp->fb.w) nw = comp->fb.w;
+    if (nh > comp->fb.h) nh = comp->fb.h;
+
+    size_t nbufsz = (size_t)nw * nh * sizeof(uint32_t);
+    int memfd = memfd_create("lumen_win", 0);
+    if (memfd < 0) goto err;
+    if (ftruncate(memfd, (off_t)nbufsz) < 0) { close(memfd); goto err; }
+    void *nshared = mmap(NULL, nbufsz, PROT_READ, MAP_SHARED, memfd, 0);
+    if (nshared == MAP_FAILED) { close(memfd); goto err; }
+
+    /* Capture old client-buffer size BEFORE glyph_window_resize overwrites it. */
+    size_t obufsz = (size_t)pw->win->client_w * pw->win->client_h * sizeof(uint32_t);
+    if (!glyph_window_resize(pw->win, nw, nh)) {
+        munmap(nshared, nbufsz); close(memfd); goto err;
+    }
+    munmap(pw->shared, obufsz);
+    close(pw->memfd);
+    pw->shared = nshared;
+    pw->memfd  = memfd;
+
+    lumen_window_created_t reply = {
+        .status = 0, .window_id = pw->id,
+        .width = (uint32_t)nw, .height = (uint32_t)nh,
+        .x = pw->win->x, .y = pw->win->y,
+    };
+    send_window_reply(cli->fd, &reply, memfd);
+
+    glyph_window_mark_all_dirty(pw->win);
+    comp->full_redraw = 1;
+    return 1;
+
+err: {
+        lumen_window_created_t er = { (uint32_t)EIO, 0, 0, 0, 0, 0 };
+        send_window_reply(cli->fd, &er, -1);
+        return 0;
+    }
+}
+
+/* Compositor-facing: initiate a resize by telling the client its new client-area
+ * size (LUMEN_EV_RESIZED). The client answers with LUMEN_OP_RESIZE_BUFFER. Only
+ * valid for proxy windows (win->priv is a proxy_window_t). */
+void lumen_proxy_request_resize(glyph_window_t *win, int cw, int ch)
+{
+    if (!win || !win->priv || win->tag >= 0) return;
+    proxy_window_t *pw = win->priv;
+    lumen_msg_hdr_t hdr = { LUMEN_EV_RESIZED, sizeof(lumen_resized_event_t) };
+    lumen_resized_event_t ev = { pw->id, (uint32_t)cw, (uint32_t)ch };
+    write(pw->client->fd, &hdr, sizeof(hdr));
+    write(pw->client->fd, &ev,  sizeof(ev));
+}
+
 /* ── Client read + hangup ───────────────────────────────────────────── */
 
 static int lumen_server_read(compositor_t *comp, lumen_client_t *cli)
@@ -612,6 +707,12 @@ static int lumen_server_read(compositor_t *comp, lumen_client_t *cli)
         lumen_set_admin_t req;
         if (read(cli->fd, &req, sizeof(req)) != (ssize_t)sizeof(req)) return -1;
         return handle_set_admin(comp, cli, &req);
+    }
+    case LUMEN_OP_RESIZE_BUFFER: {
+        if (hdr.len != (uint32_t)sizeof(lumen_resize_buffer_t)) return -1;
+        lumen_resize_buffer_t req;
+        if (read(cli->fd, &req, sizeof(req)) != (ssize_t)sizeof(req)) return -1;
+        return handle_resize_buffer(comp, cli, &req);
     }
     default: {
         char tmp[256];

@@ -15,6 +15,15 @@ static void draw_dnd_ghost(compositor_t *c);
 /* Window open animation duration (ms). */
 #define ANIM_OPEN_MS 150ULL
 
+/* Work area reserved for a maximized/snapped window: the top bar up top and a
+ * dock allowance at the bottom. ponytail: heuristic dock reserve (the dock is a
+ * separate panel process whose height the compositor doesn't query); tune if
+ * the dock height changes. */
+#define WORK_TOP_RESERVE    28
+#define WORK_BOTTOM_RESERVE 96
+#define DOUBLE_CLICK_MS     400ULL
+#define SNAP_EDGE_PX        8     /* drag cursor within this of an edge → snap */
+
 /* Monotonic milliseconds for animation timing. */
 static unsigned long long
 now_ms(void)
@@ -1067,6 +1076,70 @@ hit_close_button(glyph_window_t *win, int mx, int my)
     return dx * dx + dy * dy <= 10 * 10;
 }
 
+/* Hit-test the green (maximize) traffic light — third circle, 22px spacing
+ * after the red one (see render_chrome: btn_x + 44). */
+static int
+hit_maximize_button(glyph_window_t *win, int mx, int my)
+{
+    int cx = win->x + GLYPH_BORDER_WIDTH + 8 + 7 + 44;
+    int cy = win->y + (GLYPH_TITLEBAR_HEIGHT + GLYPH_BORDER_WIDTH) / 2;
+    int dx = mx - cx, dy = my - cy;
+    return dx * dx + dy * dy <= 10 * 10;
+}
+
+/* Maximize a resizable window to the work area, or restore prior geometry.
+ * Position is set immediately; the client re-renders at the new size via the
+ * resize round-trip (lumen_proxy_request_resize → EV_RESIZED). */
+void
+comp_toggle_maximize(compositor_t *c, glyph_window_t *win)
+{
+    if (!win || !win->resizable) return;
+    int bd = GLYPH_BORDER_WIDTH, tb = GLYPH_TITLEBAR_HEIGHT;
+
+    if (!win->maximized) {
+        win->restore_x  = win->x;         win->restore_y  = win->y;
+        win->restore_cw = win->client_w;  win->restore_ch = win->client_h;
+        int work_h = c->fb.h - WORK_TOP_RESERVE - WORK_BOTTOM_RESERVE;
+        win->x = 0;
+        win->y = WORK_TOP_RESERVE;
+        win->maximized = 1;
+        lumen_proxy_request_resize(win, c->fb.w - 2 * bd, work_h - tb - 2 * bd);
+    } else {
+        win->x = win->restore_x;
+        win->y = win->restore_y;
+        win->maximized = 0;
+        lumen_proxy_request_resize(win, win->restore_cw, win->restore_ch);
+    }
+    for (int i = 0; i < c->nwindows; i++)
+        glyph_window_mark_all_dirty(c->windows[i]);
+    c->full_redraw = 1;
+}
+
+/* Snap a resizable window to a screen edge. edge: 0=left half, 1=right half,
+ * 2=top→maximize. Left/right fill the work-area height; snapping clears the
+ * maximized flag (it's a distinct tiled state) but still stores restore geom. */
+void
+comp_snap_window(compositor_t *c, glyph_window_t *win, int edge)
+{
+    if (!win || !win->resizable) return;
+    if (edge == 2) { if (!win->maximized) comp_toggle_maximize(c, win); return; }
+
+    int bd = GLYPH_BORDER_WIDTH, tb = GLYPH_TITLEBAR_HEIGHT;
+    if (!win->maximized) {   /* remember pre-snap geometry (once) */
+        win->restore_x  = win->x;         win->restore_y  = win->y;
+        win->restore_cw = win->client_w;  win->restore_ch = win->client_h;
+    }
+    win->maximized = 0;
+    int work_h = c->fb.h - WORK_TOP_RESERVE - WORK_BOTTOM_RESERVE;
+    int half_w = c->fb.w / 2;
+    win->x = (edge == 1) ? half_w : 0;
+    win->y = WORK_TOP_RESERVE;
+    lumen_proxy_request_resize(win, half_w - 2 * bd, work_h - tb - 2 * bd);
+    for (int i = 0; i < c->nwindows; i++)
+        glyph_window_mark_all_dirty(c->windows[i]);
+    c->full_redraw = 1;
+}
+
 /* Hit-test the titlebar area of a glyph window */
 static int
 hit_titlebar(glyph_window_t *win, int mx, int my)
@@ -1247,14 +1320,26 @@ comp_handle_mouse(compositor_t *c, uint8_t buttons, int16_t dx, int16_t dy,
         return;
     }
 
-    /* Titlebar drag released — restore full frost */
+    /* Titlebar drag released — snap to a screen edge, else restore full frost */
     if (c->dragging && !left) {
         glyph_window_t *dw = c->drag_win;
         c->dragging = 0;
         c->drag_win = NULL;
         if (dw) {
-            glyph_window_mark_all_dirty(dw);
-            c->full_redraw = 1;
+            int snapped = 0;
+            if (dw->resizable) {
+                if (c->cursor_y <= WORK_TOP_RESERVE) {
+                    comp_snap_window(c, dw, 2); snapped = 1;      /* top → maximize */
+                } else if (c->cursor_x <= SNAP_EDGE_PX) {
+                    comp_snap_window(c, dw, 0); snapped = 1;      /* left half */
+                } else if (c->cursor_x >= c->fb.w - SNAP_EDGE_PX) {
+                    comp_snap_window(c, dw, 1); snapped = 1;      /* right half */
+                }
+            }
+            if (!snapped) {
+                glyph_window_mark_all_dirty(dw);
+                c->full_redraw = 1;
+            }
         }
         c->prev_buttons = buttons;
         return;
@@ -1302,8 +1387,31 @@ comp_handle_mouse(compositor_t *c, uint8_t buttons, int16_t dx, int16_t dy,
                 return;
             }
 
+            /* Green (maximize) button — resizable windows only. */
+            if (win->resizable && hit_maximize_button(win, c->cursor_x, c->cursor_y)) {
+                comp_toggle_maximize(c, win);
+                c->prev_buttons = buttons;
+                return;
+            }
+
             /* Titlebar drag — skip for chromeless windows (panels) */
             if (!win->chromeless && hit_titlebar(win, c->cursor_x, c->cursor_y)) {
+                /* Double-click a resizable window's titlebar → maximize toggle. */
+                unsigned long long t = now_ms();
+                if (win->resizable && c->last_tb_click_win == win &&
+                    t - c->last_tb_click_ms < DOUBLE_CLICK_MS &&
+                    abs(c->cursor_x - c->last_tb_click_x) < 6 &&
+                    abs(c->cursor_y - c->last_tb_click_y) < 6) {
+                    comp_toggle_maximize(c, win);
+                    c->last_tb_click_win = NULL;
+                    c->prev_buttons = buttons;
+                    return;
+                }
+                c->last_tb_click_ms  = t;
+                c->last_tb_click_x   = c->cursor_x;
+                c->last_tb_click_y   = c->cursor_y;
+                c->last_tb_click_win = win;
+
                 c->dragging = 1;
                 c->drag_win = win;
                 c->drag_dx = c->cursor_x - win->x;

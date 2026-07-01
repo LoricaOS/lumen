@@ -28,6 +28,11 @@ typedef struct {
     glyph_window_t *content_drag_win; /* window receiving mouse drag events */
     int prev_buttons;
 
+    /* Double-click detection on titlebars (toggles maximize on resizables). */
+    unsigned long long last_tb_click_ms;
+    int             last_tb_click_x, last_tb_click_y;
+    glyph_window_t *last_tb_click_win;
+
     /* Desktop selection box (click+drag on empty desktop) */
     int selecting;
     int sel_x0, sel_y0;  /* anchor point */
@@ -68,6 +73,12 @@ void comp_start_open_anim(glyph_window_t *win);
 int  comp_has_anim(compositor_t *c);
 void comp_remove_window(compositor_t *c, glyph_window_t *win);
 void comp_raise_window(compositor_t *c, glyph_window_t *win);
+/* Toggle a resizable window between maximized (fills the work area) and its
+ * saved geometry. No-op for non-resizable windows. */
+void comp_toggle_maximize(compositor_t *c, glyph_window_t *win);
+/* Snap a resizable window to a screen edge: 0=left half, 1=right half,
+ * 2=maximize (top). No-op for non-resizable windows. */
+void comp_snap_window(compositor_t *c, glyph_window_t *win, int edge);
 glyph_window_t *comp_window_at(compositor_t *c, int x, int y);
 void comp_add_dirty(compositor_t *c, glyph_rect_t r);
 int comp_composite(compositor_t *c);
