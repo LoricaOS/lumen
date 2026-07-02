@@ -381,6 +381,16 @@ draw_selection_box(surface_t *s, compositor_t *c)
  * stale shadow ring. Keeping it fixed means the shadow only ever changes on
  * move/open/close — exactly the events that dirty the SHADOW_PAD-expanded
  * win_screen_rect. Must stay within SHADOW_PAD. */
+/* Integer sqrt for the shadow's corner distances (args < ~2*SPREAD²). */
+static int
+isqrt_small(int v)
+{
+    int s = 0;
+    while ((s + 1) * (s + 1) <= v)
+        s++;
+    return s;
+}
+
 static void
 draw_window_shadow(surface_t *back, glyph_window_t *win)
 {
@@ -390,16 +400,44 @@ draw_window_shadow(surface_t *back, glyph_window_t *win)
     int h = win->client_h + tb + 2 * bd;
     int x = win->x, y = win->y;
 
-    int off    = 5;        /* downward offset */
-    int spread = 14;       /* how far it bleeds out (< SHADOW_PAD) */
-    int alpha  = 8;        /* per-layer darkness */
-    int layers = 5;
+    /* Per-pixel penumbra: alpha falls off quadratically with the Euclidean
+     * distance to the window rect shifted down by S_OFF. Euclidean distance
+     * to a rect rounds the shadow's corners naturally (no banding, unlike
+     * the old stacked-layer approach). Pixels the window body will cover
+     * are skipped — only the visible ring is computed.
+     * S_OFF + S_SPREAD must stay within SHADOW_PAD. */
+    enum { S_OFF = 6, S_SPREAD = 20, S_AMAX = 96 };
+    int sy0 = y + S_OFF, sy1 = y + S_OFF + h;          /* shadow rect rows */
+    int x0 = x - S_SPREAD,         x1 = x + w + S_SPREAD;
+    int y0 = y - S_SPREAD + S_OFF, y1 = sy1 + S_SPREAD;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > back->w) x1 = back->w;
+    if (y1 > back->h) y1 = back->h;
 
-    for (int i = layers; i >= 1; i--) {
-        int g = spread * i / layers;
-        draw_blend_rounded_rect(back, x - g, y - g + off,
-                                w + 2 * g, h + 2 * g,
-                                R_MD + g, 0x00000000, alpha);
+    for (int py = y0; py < y1; py++) {
+        int dy = py < sy0 ? sy0 - py : (py >= sy1 ? py - sy1 + 1 : 0);
+        uint32_t *row = &back->buf[py * back->pitch];
+        for (int px = x0; px < x1; px++) {
+            /* Window body covers this span — jump past it. */
+            if (py >= y && py < y + h && px >= x && px < x + w) {
+                px = x + w - 1;
+                continue;
+            }
+            int dx = px < x ? x - px : (px >= x + w ? px - (x + w) + 1 : 0);
+            int d = dx == 0 ? dy
+                  : dy == 0 ? dx
+                  : isqrt_small(dx * dx + dy * dy);
+            if (d >= S_SPREAD)
+                continue;
+            int q = S_SPREAD - d;
+            int a = S_AMAX * q * q / (S_SPREAD * S_SPREAD);
+            int inv = 255 - a;
+            uint32_t bg = row[px];
+            row[px] = ((((bg >> 16) & 0xFF) * inv / 255) << 16) |
+                      ((((bg >> 8)  & 0xFF) * inv / 255) << 8)  |
+                       (((bg        & 0xFF) * inv / 255));
+        }
     }
 }
 
@@ -675,7 +713,7 @@ blit_window_to_back(surface_t *back, glyph_window_t *win, int mode)
                                 0x00B0202A, 230);
             else
                 draw_blend_rect(back, win->x, win->y, total_w, tb + bd,
-                                0x00101020, 160);
+                                0x000F0E19, 160);
 
             /* 3. Tint on client region — dark for terminals, light for widgets */
             if (win->priv) {
@@ -687,7 +725,7 @@ blit_window_to_back(surface_t *back, glyph_window_t *win, int mode)
                 /* Widget window: dark translucent glass (not white) */
                 draw_blend_rect(back, win->x + bd, win->y + tb + bd,
                                 win->client_w, win->client_h,
-                                0x00181828, 190);
+                                0x00151420, 190);
             }
 
             /* 4. Subtle border around entire window */
@@ -721,12 +759,12 @@ blit_window_to_back(surface_t *back, glyph_window_t *win, int mode)
         int btn_cy = title_cy;
         int btn_x = win->x + bd + 8 + 7;
         int tl_focused = win->focused_window;
-        uint32_t tl_r = tl_focused ? THEME_TL_RED    : 0x00555E6E;
-        uint32_t tl_y = tl_focused ? THEME_TL_YELLOW : 0x00555E6E;
-        uint32_t tl_g = tl_focused ? THEME_TL_GREEN  : 0x00555E6E;
-        draw_circle_filled(back, btn_x, btn_cy, 7, tl_r);
-        draw_circle_filled(back, btn_x + 22, btn_cy, 7, tl_y);
-        draw_circle_filled(back, btn_x + 44, btn_cy, 7, tl_g);
+        uint32_t tl_r = tl_focused ? THEME_TL_RED    : 0x004E525C;
+        uint32_t tl_y = tl_focused ? THEME_TL_YELLOW : 0x004E525C;
+        uint32_t tl_g = tl_focused ? THEME_TL_GREEN  : 0x004E525C;
+        draw_traffic_light(back, btn_x, btn_cy, 7, tl_r, tl_focused ? 1 : 0);
+        draw_traffic_light(back, btn_x + 22, btn_cy, 7, tl_y, tl_focused ? 2 : 0);
+        draw_traffic_light(back, btn_x + 44, btn_cy, 7, tl_g, tl_focused ? 3 : 0);
 
         /* 7. Blit client area content with color keying (transparent pixels) */
         {
