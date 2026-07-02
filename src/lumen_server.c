@@ -17,7 +17,8 @@
 #include "lumen_server.h"
 #include "lumen_proto.h"
 
-#define LUMEN_MAX_CLIENTS            8
+/* LUMEN_MAX_CLIENTS lives in lumen_server.h (main.c sizes its idle-poll
+ * fd array with it). */
 #define LUMEN_MAX_WINDOWS_PER_CLIENT 8
 
 typedef struct proxy_window proxy_window_t;
@@ -495,13 +496,18 @@ static int handle_damage(compositor_t *comp, lumen_client_t *cli,
     if (!pw) return 0;
     /* First DAMAGE = first frame is ready → reveal the window (it was
      * created unpresented so its uninitialized buffer never flashed). The
-     * 0→1 transition also kicks off the window's open (scale+fade) animation. */
+     * 0→1 transition also kicks off the window's open (scale+fade) animation.
+     * Only this reveal needs a full recomposite (the window appears over
+     * everything); a routine frame from an already-presented window goes
+     * through the dirty-rect path — mark_all_dirty makes the compositor
+     * recomposite just this window's region and reuse every other window's
+     * cached blur, instead of re-blurring the whole desktop per app frame. */
     if (!pw->win->presented) {
         pw->win->presented = 1;
         comp_start_open_anim(pw->win);
+        comp->full_redraw = 1;
     }
     glyph_window_mark_all_dirty(pw->win);
-    comp->full_redraw = 1;
     return 1;
 }
 
@@ -962,6 +968,14 @@ int lumen_server_init(void)
 
     dprintf(2, "[LUMEN-SRV] listening on /run/lumen.sock fd=%d\n", fd);
     return fd;
+}
+
+int lumen_server_collect_fds(int *fds, int max)
+{
+    int n = 0;
+    for (int i = 0; i < s_ncli && n < max; i++)
+        fds[n++] = s_clients[i]->fd;
+    return n;
 }
 
 int lumen_server_tick(compositor_t *comp, int listen_fd)

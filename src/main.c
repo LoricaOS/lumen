@@ -578,7 +578,6 @@ main(void)
     int clock_counter = 0;
 
     /* Main event loop */
-    struct timespec sleep_ts = { 0, 16000000 }; /* 16ms ~ 60fps */
     char kbd_byte;
     mouse_event_t mev;
     char pty_buf[512];
@@ -965,10 +964,16 @@ after_mouse:
                 activity = 1;
         }
 
-        /* Clock update — roughly once per second (60 frames) */
-        clock_counter++;
-        if (clock_counter >= 60) {
-            clock_counter = 0;
+        /* Clock update — once per wall-clock second (the loop is event-paced
+         * now, so an iteration counter would drift with activity). */
+        {
+            struct timespec mono;
+            clock_gettime(CLOCK_MONOTONIC, &mono);
+            if (mono.tv_sec == clock_counter)
+                goto clock_done;
+            clock_counter = (int)mono.tv_sec;
+        }
+        {
             /* Refresh runtime prefs (clock format, timezone, natural scroll,
              * animations, theme/wallpaper/night-light) so Settings changes
              * apply without a restart. Whole-screen changes force a redraw. */
@@ -1010,6 +1015,7 @@ after_mouse:
                 }
             }
         }
+clock_done:
 
         /* Composite and cursor update */
         if (activity) {
@@ -1073,9 +1079,31 @@ after_mouse:
             }
         }
 
-        /* Sleep if idle to avoid busy-looping */
-        if (!activity)
-            nanosleep(&sleep_ts, NULL);
+        /* Idle: block on every input source instead of a 16 ms sleep-poll
+         * cycle (the old loop woke 60x/sec doing read/waitpid/poll syscalls
+         * on an idle desktop).  Any keyboard byte, mouse packet, new client
+         * connection, client message, or PTY output wakes the loop instantly
+         * — better latency than the sleep, ~0 idle CPU.  The 250 ms cap keeps
+         * the once-a-second clock/prefs check honest. */
+        if (!activity) {
+            struct pollfd pfds[8 + LUMEN_MAX_CLIENTS + MAX_WINDOWS];
+            int npf = 0;
+            pfds[npf++] = (struct pollfd){ .fd = 0, .events = POLLIN };
+            if (mouse_fd >= 0)
+                pfds[npf++] = (struct pollfd){ .fd = mouse_fd, .events = POLLIN };
+            if (lumen_srv_fd >= 0) {
+                pfds[npf++] = (struct pollfd){ .fd = lumen_srv_fd, .events = POLLIN };
+                int cfds[LUMEN_MAX_CLIENTS];
+                int nc = lumen_server_collect_fds(cfds, LUMEN_MAX_CLIENTS);
+                for (int ci = 0; ci < nc; ci++)
+                    pfds[npf++] = (struct pollfd){ .fd = cfds[ci], .events = POLLIN };
+            }
+            for (int wi = 0; wi < comp.nwindows; wi++)
+                if (comp.windows[wi]->tag >= 0)
+                    pfds[npf++] = (struct pollfd){ .fd = comp.windows[wi]->tag,
+                                                   .events = POLLIN };
+            poll(pfds, (nfds_t)npf, 250);
+        }
     }
 
     return 0;

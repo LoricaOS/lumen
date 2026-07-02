@@ -4,8 +4,15 @@
 
 #include "compositor.h"
 
+#define LUMEN_MAX_CLIENTS 8
+
 int lumen_server_init(void);
 int lumen_server_tick(compositor_t *comp, int listen_fd);
+
+/* Fill fds[] with every connected client fd (for the main loop's idle poll —
+ * a client frame then wakes the loop instead of waiting out the idle sleep).
+ * Returns the count written (≤ max). */
+int lumen_server_collect_fds(int *fds, int max);
 
 /* Notify a proxy window of focus change. win may be NULL or non-proxy (no-op). */
 void lumen_proxy_notify_focus(glyph_window_t *win, int focused);
