@@ -119,29 +119,42 @@ menu_draw(surface_t *s)
 
     int mh = menu_total_height();
 
+    /* Save the corner blocks BEFORE compositing so the rounded corners can
+     * restore the true backdrop (wallpaper image, not a flat theme color —
+     * painting C_BG1 left colored dots on photo wallpapers). */
+    enum { MR = 8 };
+    uint32_t ctl[MR * MR], ctr[MR * MR], cbl[MR * MR], cbr[MR * MR];
+    {
+        int mx = MENU_X, my = MENU_Y, mw = MENU_W;
+        for (int py = 0; py < MR; py++)
+            for (int px = 0; px < MR; px++) {
+                ctl[py * MR + px] = s->buf[(my + py) * s->pitch + mx + px];
+                ctr[py * MR + px] = s->buf[(my + py) * s->pitch + mx + mw - MR + px];
+                cbl[py * MR + px] = s->buf[(my + mh - MR + py) * s->pitch + mx + px];
+                cbr[py * MR + px] = s->buf[(my + mh - MR + py) * s->pitch + mx + mw - MR + px];
+            }
+    }
+
     /* Frosted glass background: blur + tint + rounded corner mask */
     draw_box_blur(s, MENU_X, MENU_Y, MENU_W, mh, 10);
     draw_blend_rect(s, MENU_X, MENU_Y, MENU_W, mh, MENU_BG, 180);
 
-    /* Mask corners by painting desktop bg over outside-rounded pixels.
-     * Only check the corner regions (r=8). */
+    /* Round the corners by restoring the saved backdrop outside the arc. */
     {
-        int r = 8, mx = MENU_X, my = MENU_Y, mw = MENU_W;
-        for (int py = 0; py < r; py++) {
-            for (int px = 0; px < r; px++) {
-                int dx = r - px, dy = r - py;
-                if (dx * dx + dy * dy > r * r) {
-                    /* Top-left */
-                    draw_px(s, mx + px, my + py, C_BG1);
-                    /* Top-right */
-                    draw_px(s, mx + mw - 1 - px, my + py, C_BG1);
-                    /* Bottom-left */
-                    draw_px(s, mx + px, my + mh - 1 - py, C_BG1);
-                    /* Bottom-right */
-                    draw_px(s, mx + mw - 1 - px, my + mh - 1 - py, C_BG1);
+        int mx = MENU_X, my = MENU_Y, mw = MENU_W;
+        for (int py = 0; py < MR; py++)
+            for (int px = 0; px < MR; px++) {
+                int dx = MR - px, dy = MR - py;
+                if (dx * dx + dy * dy > MR * MR) {
+                    s->buf[(my + py) * s->pitch + mx + px] = ctl[py * MR + px];
+                    s->buf[(my + py) * s->pitch + mx + mw - 1 - px] =
+                        ctr[py * MR + (MR - 1 - px)];
+                    s->buf[(my + mh - 1 - py) * s->pitch + mx + px] =
+                        cbl[(MR - 1 - py) * MR + px];
+                    s->buf[(my + mh - 1 - py) * s->pitch + mx + mw - 1 - px] =
+                        cbr[(MR - 1 - py) * MR + (MR - 1 - px)];
                 }
             }
-        }
     }
 
     /* Subtle border */
@@ -159,12 +172,14 @@ menu_draw(surface_t *s)
             y += MENU_SEP_H;
         } else {
             if (i == menu_hover)
-                draw_blend_rect(s, MENU_X + 4, y, MENU_W - 8, MENU_ITEM_H,
-                                MENU_HOVER_BG, 100);
+                draw_blend_rounded_rect(s, MENU_X + 4, y, MENU_W - 8,
+                                        MENU_ITEM_H, 6, MENU_HOVER_BG, 150);
 
+            uint32_t item_fg = (i == menu_hover) ? THEME_TEXT_ON_ACCENT
+                                                 : MENU_TEXT;
             if (g_font_ui)
                 font_draw_text(s, g_font_ui, 14, MENU_X + 16, y + 6,
-                               menu_labels[i], MENU_TEXT);
+                               menu_labels[i], item_fg);
             else
                 draw_text(s, MENU_X + 16, y + 4, menu_labels[i],
                           MENU_TEXT, (i == menu_hover) ? MENU_HOVER_BG : MENU_BG);
