@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/utsname.h>
 
 /* ---- System info helpers ---- */
 
@@ -80,7 +81,13 @@ get_cpu_info(char *out, int outsz)
             }
         }
     }
-    snprintf(out, outsz, "x86_64");
+    /* No core count available — report the machine arch from uname
+     * (aarch64 / x86_64) instead of a hardcoded label. */
+    struct utsname u;
+    if (uname(&u) == 0 && u.machine[0])
+        snprintf(out, outsz, "%s", u.machine);
+    else
+        snprintf(out, outsz, "unknown");
 }
 
 /* ---- Logo loading (reuse Bastion's format) ---- */
