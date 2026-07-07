@@ -327,6 +327,93 @@ static void set_volume(int v)
     syscall(SYS_AUDIO_VOLUME, (long)v);
 }
 
+/* ── Wi-Fi status (top-bar icon) + notifications ─────────────────────────── */
+#define SYS_NETCFG 500
+typedef struct { char ssid[33]; unsigned char channel, sec, connected, pad; } wifi_net_t;
+static int s_wifi_n = -1;   /* -1 = no adapter, >=0 = #networks scanned */
+
+static void wifi_refresh(void)
+{
+    wifi_net_t buf[24];
+    long n = syscall(SYS_NETCFG, 2, (long)buf, 24, 0);
+    s_wifi_n = (n >= 0) ? (int)n : -1;
+}
+
+static int isqrt_i(int n) { int x = 0; while ((x + 1) * (x + 1) <= n) x++; return x; }
+
+/* A Wi-Fi "fan" glyph: three ±45° arcs above a dot at (cx,cy). */
+static void draw_wifi_glyph(surface_t *s, int cx, int cy, uint32_t col)
+{
+    const int radii[3] = { 10, 7, 4 };
+    for (int i = 0; i < 3; i++) {
+        int r = radii[i];
+        for (int dx = -r; dx <= r; dx++) {
+            int adx = dx < 0 ? -dx : dx;
+            int dy = isqrt_i(r * r - dx * dx);
+            if (dy >= adx) draw_fill_rect(s, cx + dx, cy - dy, 2, 2, col);
+        }
+    }
+    draw_circle_filled(s, cx, cy, 2, col);
+}
+
+/* Draw the Wi-Fi icon in the top bar, just left of the volume cluster. Mirrors
+ * taskbar.c's right-side geometry (clock at w-cw-12, then vol icon+track+gap). */
+static void draw_wifi_status(surface_t *s, int screen_w)
+{
+    int cw = g_font_ui ? font_text_width(g_font_ui, 14, s_clock_str)
+                       : (int)strlen(s_clock_str) * 8;
+    int clock_x    = screen_w - cw - 12;
+    int vol_track  = clock_x - 18 /*VOL_GAP*/ - 56 /*VOL_TRACK_W*/;
+    int cluster_l  = vol_track - 16 /*VOL_ICON_W*/;
+    int cx = cluster_l - 14;                 /* icon center x */
+    int cy = TOPBAR_HEIGHT - 4;              /* dot near the bottom of the bar */
+    uint32_t col = (s_wifi_n > 0) ? THEME_TEXT : THEME_TEXT_DIM;
+    draw_wifi_glyph(s, cx, cy, col);
+}
+
+/* Minimal notification toast (top-right, below the bar; auto-dismisses). This is
+ * the seed of the desktop notification system — internal for now, a protocol for
+ * apps to post can hang off notify_post() later. */
+#define NOTIF_W   320
+#define NOTIF_H   52
+static char s_notif_title[96];
+static int  s_notif_wifi;                    /* draw the Wi-Fi glyph on the toast */
+static long s_notif_expiry;                  /* CLOCK_MONOTONIC sec; 0 = none */
+
+static void notify_post(const char *title, int wifi_icon, int secs)
+{
+    strncpy(s_notif_title, title, sizeof(s_notif_title) - 1);
+    s_notif_title[sizeof(s_notif_title) - 1] = 0;
+    s_notif_wifi = wifi_icon;
+    struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
+    s_notif_expiry = t.tv_sec + secs;
+}
+
+static int notify_active(void)
+{
+    if (!s_notif_expiry) return 0;
+    struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
+    if (t.tv_sec >= s_notif_expiry) { s_notif_expiry = 0; return 0; }
+    return 1;
+}
+
+static void notify_draw(surface_t *s, int screen_w)
+{
+    if (!notify_active()) return;
+    int x = screen_w - NOTIF_W - 16;
+    int y = TOPBAR_HEIGHT + 14;
+    draw_rounded_rect(s, x, y, NOTIF_W, NOTIF_H, 12, THEME_SURFACE_2);
+    draw_rounded_outline(s, x, y, NOTIF_W, NOTIF_H, 12, 1, THEME_BORDER);
+    int tx = x + 20;
+    if (s_notif_wifi) {
+        draw_wifi_glyph(s, x + 22, y + NOTIF_H - 16, THEME_ACCENT);
+        tx = x + 44;
+    }
+    if (g_font_ui)
+        font_draw_text(s, g_font_ui, 14, tx, y + (NOTIF_H - 14) / 2,
+                       s_notif_title, THEME_TEXT);
+}
+
 static void
 desktop_draw_cb(surface_t *s, int w, int h)
 {
@@ -337,15 +424,17 @@ desktop_draw_cb(surface_t *s, int w, int h)
      * of comp_composite's full-redraw branch), so it tells topbar_draw whether
      * the desktop background behind the bar changed → recompute the cached blur. */
     topbar_draw(s, w, s_clock_str, s_volume, s_comp ? s_comp->full_redraw : 1);
+    draw_wifi_status(s, w);
 }
 
-/* ---- Overlay callback -- drawn after windows (context menu only) ---- */
+/* ---- Overlay callback -- drawn after windows (menu + notification toast) ---- */
 
 static void
 overlay_draw_cb(surface_t *s, int w, int h)
 {
-    (void)w; (void)h;
+    (void)h;
     menu_draw(s);
+    notify_draw(s, w);
 }
 
 /* ---- Built-in spawners exposed to citadel-dock via LUMEN_OP_INVOKE ---- */
@@ -591,6 +680,17 @@ main(void)
 
     /* Clock update counter */
     int clock_counter = 0;
+
+    /* Wi-Fi: read the kernel's boot scan and, on this first live start, raise a
+     * notification with the count. Fires right as the desktop comes up. */
+    wifi_refresh();
+    if (s_wifi_n > 0) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "%d Wi-Fi network%s available.",
+                 s_wifi_n, s_wifi_n == 1 ? " is" : "s are");
+        notify_post(msg, 1 /*wifi icon*/, 8 /*seconds*/);
+        comp.full_redraw = 1;
+    }
 
     /* Main event loop */
     char kbd_byte;
@@ -1029,6 +1129,27 @@ after_mouse:
                     }
                 }
             }
+        }
+
+        /* Wi-Fi state + notification upkeep — runs once per second (same gate as
+         * the clock). Repaints the bar icon on change and keeps the toast
+         * animating in/out until it expires. */
+        {
+            int prev = s_wifi_n;
+            wifi_refresh();
+            if (prev != s_wifi_n) {
+                comp_add_dirty(&comp, (glyph_rect_t){0, 0, comp.fb.w, 28});
+                activity = 1;
+            }
+            static int notif_was = 0;
+            int notif_now = notify_active();
+            if (notif_now || notif_was) {
+                int nx = comp.fb.w - NOTIF_W - 24;
+                comp_add_dirty(&comp,
+                    (glyph_rect_t){nx, TOPBAR_HEIGHT, NOTIF_W + 24, NOTIF_H + 20});
+                activity = 1;
+            }
+            notif_was = notif_now;
         }
 clock_done:
 
