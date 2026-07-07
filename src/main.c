@@ -681,16 +681,10 @@ main(void)
     /* Clock update counter */
     int clock_counter = 0;
 
-    /* Wi-Fi: read the kernel's boot scan and, on this first live start, raise a
-     * notification with the count. Fires right as the desktop comes up. */
+    /* Wi-Fi: read the kernel's boot scan for the top-bar icon. The first-boot
+     * "N networks available" notification is raised from the per-second upkeep
+     * the first time networks are actually seen (robust to startup timing). */
     wifi_refresh();
-    if (s_wifi_n > 0) {
-        char msg[64];
-        snprintf(msg, sizeof(msg), "%d Wi-Fi network%s available.",
-                 s_wifi_n, s_wifi_n == 1 ? " is" : "s are");
-        notify_post(msg, 1 /*wifi icon*/, 8 /*seconds*/);
-        comp.full_redraw = 1;
-    }
 
     /* Main event loop */
     char kbd_byte;
@@ -1141,12 +1135,24 @@ after_mouse:
                 comp_add_dirty(&comp, (glyph_rect_t){0, 0, comp.fb.w, 28});
                 activity = 1;
             }
+            /* First-boot notification: the first time networks are seen, raise
+             * "<N> Wi-Fi networks are available." A couple of upkeep ticks in so
+             * the login→desktop transition has settled and the user sees it. */
+            static int notif_shown = 0, upkeep_ticks = 0;
+            upkeep_ticks++;
+            if (!notif_shown && s_wifi_n > 0 && upkeep_ticks >= 2) {
+                char msg[64];
+                snprintf(msg, sizeof(msg), "%d Wi-Fi network%s available.",
+                         s_wifi_n, s_wifi_n == 1 ? " is" : "s are");
+                notify_post(msg, 1 /*wifi icon*/, 12 /*seconds*/);
+                notif_shown = 1;
+            }
+            /* While the toast is up (or the frame it clears), force a full
+             * composite so the overlay pass repaints/erases it reliably. */
             static int notif_was = 0;
             int notif_now = notify_active();
             if (notif_now || notif_was) {
-                int nx = comp.fb.w - NOTIF_W - 24;
-                comp_add_dirty(&comp,
-                    (glyph_rect_t){nx, TOPBAR_HEIGHT, NOTIF_W + 24, NOTIF_H + 20});
+                comp.full_redraw = 1;
                 activity = 1;
             }
             notif_was = notif_now;
