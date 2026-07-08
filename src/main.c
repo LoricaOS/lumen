@@ -339,6 +339,32 @@ static void wifi_refresh(void)
     s_wifi_n = (n >= 0) ? (int)n : -1;
 }
 
+/* Hardware monitor (CPU temperature + battery) via sys_hwmon (syscall 506).
+ * Fields are "unavailable" (temp -1 / battery absent) in a VM with no AMD Data
+ * Fabric and no battery, so the indicators simply don't draw there. */
+#define SYS_HWMON 506
+typedef struct {
+    int           cpu_temp_c, cpu_temp_max_c;
+    unsigned char battery_present, battery_percent, battery_charging, ac_online;
+    unsigned char reserved[4];
+} hwmon_t;
+static hwmon_t s_hw = { .cpu_temp_c = -1 };
+
+static void hwmon_refresh(void)
+{
+    hwmon_t h;
+    memset(&h, 0, sizeof h);
+    if (syscall(SYS_HWMON, (long)&h, 0, 0, 0) == 0)
+        s_hw = h;
+    else { s_hw.cpu_temp_c = -1; s_hw.battery_present = 0; }
+#ifdef HWMON_DEMO
+    if (s_hw.cpu_temp_c < 0) {
+        s_hw.cpu_temp_c = 52; s_hw.cpu_temp_max_c = 100;
+        s_hw.battery_present = 1; s_hw.battery_percent = 73; s_hw.battery_charging = 0;
+    }
+#endif
+}
+
 static int isqrt_i(int n) { int x = 0; while ((x + 1) * (x + 1) <= n) x++; return x; }
 
 /* A Wi-Fi "fan" glyph: three ±45° arcs above a dot at (cx,cy). */
@@ -369,6 +395,56 @@ static void draw_wifi_status(surface_t *s, int screen_w)
     int cy = TOPBAR_HEIGHT - 4;              /* dot near the bottom of the bar */
     uint32_t col = (s_wifi_n > 0) ? THEME_TEXT : THEME_TEXT_DIM;
     draw_wifi_glyph(s, cx, cy, col);
+}
+
+static uint32_t batt_color(int pct)
+{
+    if (pct > 50) return THEME_OK;
+    if (pct > 20) return THEME_WARN;
+    return THEME_ERROR;
+}
+
+/* Battery % + CPU temperature, in the top bar left of the Wi-Fi icon. Each
+ * element draws only when its sensor is available, so nothing appears in a VM
+ * (no AMD Data Fabric, no battery) and both light up on real hardware. */
+static void draw_hwmon_status(surface_t *s, int screen_w)
+{
+    int cw = g_font_ui ? font_text_width(g_font_ui, 14, s_clock_str)
+                       : (int)strlen(s_clock_str) * 8;
+    int clock_x   = screen_w - cw - 12;
+    int vol_track = clock_x - 18 - 56;
+    int cluster_l = vol_track - 16;
+    int wifi_cx   = cluster_l - 14;
+    int right     = wifi_cx - 20;            /* right edge, left of the Wi-Fi glyph */
+    int ty        = (TOPBAR_HEIGHT - 13) / 2;
+
+    if (s_hw.battery_present) {
+        const int BW = 22, BH = 11, NUB = 2;
+        int by = (TOPBAR_HEIGHT - BH) / 2;
+        int bx = right - NUB - BW;
+        uint32_t col = s_hw.battery_charging ? THEME_ACCENT
+                                             : batt_color(s_hw.battery_percent);
+        draw_rounded_outline(s, bx, by, BW, BH, 2, 1, THEME_TEXT);
+        draw_fill_rect(s, bx + BW, by + (BH - 5) / 2, NUB, 5, THEME_TEXT);
+        int fillw = (BW - 4) * s_hw.battery_percent / 100;
+        if (fillw > 0) draw_fill_rect(s, bx + 2, by + 2, fillw, BH - 4, col);
+        char pc[8];
+        snprintf(pc, sizeof pc, "%d%%", s_hw.battery_percent);
+        int pw = g_font_ui ? font_text_width(g_font_ui, 13, pc) : (int)strlen(pc) * 7;
+        if (g_font_ui) font_draw_text(s, g_font_ui, 13, bx - 6 - pw, ty, pc, THEME_TEXT);
+        right = bx - 6 - pw - 12;
+    }
+
+    if (s_hw.cpu_temp_c >= 0) {
+        int mx = s_hw.cpu_temp_max_c > 0 ? s_hw.cpu_temp_max_c : 100;
+        uint32_t col = (s_hw.cpu_temp_c >= mx - 5)      ? THEME_ERROR
+                     : (s_hw.cpu_temp_c >= mx * 8 / 10) ? THEME_WARN
+                                                        : THEME_TEXT;
+        char tc[12];
+        snprintf(tc, sizeof tc, "%d\xC2\xB0""C", s_hw.cpu_temp_c);
+        int tw = g_font_ui ? font_text_width(g_font_ui, 13, tc) : (int)strlen(tc) * 7;
+        if (g_font_ui) font_draw_text(s, g_font_ui, 13, right - tw, ty, tc, col);
+    }
 }
 
 /* Minimal notification toast (top-right, below the bar; auto-dismisses). This is
@@ -425,6 +501,7 @@ desktop_draw_cb(surface_t *s, int w, int h)
      * the desktop background behind the bar changed → recompute the cached blur. */
     topbar_draw(s, w, s_clock_str, s_volume, s_comp ? s_comp->full_redraw : 1);
     draw_wifi_status(s, w);
+    draw_hwmon_status(s, w);
 }
 
 /* ---- Overlay callback -- drawn after windows (menu + notification toast) ---- */
@@ -685,6 +762,7 @@ main(void)
      * "N networks available" notification is raised from the per-second upkeep
      * the first time networks are actually seen (robust to startup timing). */
     wifi_refresh();
+    hwmon_refresh();
 
     /* Main event loop */
     char kbd_byte;
@@ -1131,7 +1209,12 @@ after_mouse:
         {
             int prev = s_wifi_n;
             wifi_refresh();
-            if (prev != s_wifi_n) {
+            /* Temperature/battery refresh — repaint the bar when either changes. */
+            int prev_t = s_hw.cpu_temp_c, prev_b = s_hw.battery_present
+                         ? s_hw.battery_percent + 1 : 0;
+            hwmon_refresh();
+            int now_b = s_hw.battery_present ? s_hw.battery_percent + 1 : 0;
+            if (prev != s_wifi_n || prev_t != s_hw.cpu_temp_c || prev_b != now_b) {
                 comp_add_dirty(&comp, (glyph_rect_t){0, 0, comp.fb.w, 28});
                 activity = 1;
             }
