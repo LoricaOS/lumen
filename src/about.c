@@ -120,6 +120,62 @@ load_logo(void)
     if (got < sz) { free(s_logo_px); s_logo_px = NULL; s_logo_w = s_logo_h = 0; }
 }
 
+/* Soften the logo: it's drawn at 1/4 size, and nearest-neighbour downscaling
+ * left hard, aliased white/transparent edges. Pre-scale by 4 with a box filter
+ * (alpha-weighted colour so there's no dark fringe) — this IS anti-aliasing, so
+ * edges become a smooth alpha ramp — then a light center-weighted 3x3 alpha
+ * blur to feather them a touch more. Runs once; replaces s_logo_px with the
+ * 1/4-size softened bitmap. */
+static void
+soften_logo(void)
+{
+    if (!s_logo_px || s_logo_w < 4 || s_logo_h < 4) return;
+    const int F = 4;
+    int dw = s_logo_w / F, dh = s_logo_h / F;
+    uint32_t *ds = malloc((size_t)dw * dh * 4);
+    if (!ds) return;
+    for (int j = 0; j < dh; j++)
+        for (int i = 0; i < dw; i++) {
+            unsigned sr = 0, sg = 0, sb = 0, sa = 0;
+            for (int yy = 0; yy < F; yy++)
+                for (int xx = 0; xx < F; xx++) {
+                    uint32_t p = s_logo_px[(j * F + yy) * s_logo_w + (i * F + xx)];
+                    unsigned a = (p >> 24) & 0xFF;
+                    sr += ((p >> 16) & 0xFF) * a;
+                    sg += ((p >> 8) & 0xFF) * a;
+                    sb += (p & 0xFF) * a;
+                    sa += a;
+                }
+            unsigned A = sa / (unsigned)(F * F);
+            unsigned R = sa ? sr / sa : 0, G = sa ? sg / sa : 0, B = sa ? sb / sa : 0;
+            ds[j * dw + i] = (A << 24) | (R << 16) | (G << 8) | B;
+        }
+    uint32_t *sm = malloc((size_t)dw * dh * 4);
+    if (sm) {
+        for (int j = 0; j < dh; j++)
+            for (int i = 0; i < dw; i++) {
+                unsigned acc = 0, wsum = 0;
+                for (int yy = -1; yy <= 1; yy++)
+                    for (int xx = -1; xx <= 1; xx++) {
+                        int nx = i + xx, ny = j + yy;
+                        if (nx < 0 || nx >= dw || ny < 0 || ny >= dh) continue;
+                        unsigned w = (xx == 0 && yy == 0) ? 4u : 1u;
+                        acc += ((ds[ny * dw + nx] >> 24) & 0xFF) * w;
+                        wsum += w;
+                    }
+                unsigned A = wsum ? acc / wsum : 0;
+                uint32_t c = ds[j * dw + i];
+                sm[j * dw + i] = (A << 24) | (c & 0x00FFFFFF);
+            }
+        free(ds);
+        ds = sm;
+    }
+    free(s_logo_px);
+    s_logo_px = ds;
+    s_logo_w = dw;
+    s_logo_h = dh;
+}
+
 /* ---- Claude logo loading ---- */
 
 static uint32_t *s_claude_px;
@@ -223,8 +279,7 @@ about_render(glyph_window_t *win)
 
     /* LoricaOS logo (scaled to 25% — ~218x56) */
     if (s_logo_px && s_logo_w > 0) {
-        int dw = s_logo_w / 4;
-        int dh = s_logo_h / 4;
+        int dw = s_logo_w, dh = s_logo_h;   /* already 1/4-scaled + softened */
         int lx = cx + (cw - dw) / 2;
         draw_blit_alpha_scaled(s, lx, y, dw, dh, s_logo_px, s_logo_w, s_logo_h);
         y += dh + 12;
@@ -245,18 +300,20 @@ about_render(glyph_window_t *win)
         const char *a2 = "not production-hardened";
         const char *d1 = "The C kernel likely contains real,";
         const char *d2 = "exploitable vulnerabilities.";
-        int bx = cx + 26, bw = cw - 52, bh = 88;
-        draw_blend_rounded_rect(s, bx, y, bw, bh, R_MD, 0x00FFAA55, 24);
-        draw_rounded_outline(s, bx, y, bw, bh, R_MD, 1, 0x009C7030);
+        int bx = cx + 26, bw = cw - 52, bh = 90;
+        draw_blend_rounded_rect(s, bx, y, bw, bh, R_MD, 0x00FFAA55, 22);
+        draw_rounded_outline(s, bx, y, bw, bh, R_MD, 1, 0x00966C30);
         if (g_font_ui) {
-            icon_warn(s, bx + 18, y + 16, 0x00FFB454, ABOUT_BG);
-            int tx = bx + 46;
-            font_draw_text(s, g_font_ui, 13, tx, y + 15, a1, 0x00FFC676);
-            font_draw_text(s, g_font_ui, 13, tx, y + 32, a2, 0x00FFC676);
-            int c3 = bx + (bw - font_text_width(g_font_ui, 13, d1)) / 2;
-            int c4 = bx + (bw - font_text_width(g_font_ui, 13, d2)) / 2;
-            font_draw_text(s, g_font_ui, 13, c3, y + 55, d1, 0x00B7A08C);
-            font_draw_text(s, g_font_ui, 13, c4, y + 71, d2, 0x00B7A08C);
+            /* Everything centered for a tidy shape; the warning glyph sits just
+             * left of the centered heading, the amber sub-line and the dim
+             * kernel caveat are centered under it. */
+            int a1w = font_text_width(g_font_ui, 13, a1);
+            int a1x = bx + (bw - a1w) / 2;
+            icon_warn(s, a1x - 26, y + 15, 0x00FFB454, ABOUT_BG);
+            font_draw_text(s, g_font_ui, 13, a1x, y + 16, a1, 0x00FFC676);
+            about_center(s, bx, bw, y + 33, 13, a2, 0x00FFC676);
+            about_center(s, bx, bw, y + 55, 13, d1, 0x00B29A86);
+            about_center(s, bx, bw, y + 71, 13, d2, 0x00B29A86);
         }
         y += bh + 20;
     }
@@ -357,8 +414,10 @@ about_create(int screen_w, int screen_h)
     s_screen_h = screen_h;
 
     /* Load logos on first call */
-    if (!s_logo_px)
+    if (!s_logo_px) {
         load_logo();
+        soften_logo();
+    }
     if (!s_claude_px)
         load_claude_logo();
 
