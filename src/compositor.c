@@ -638,6 +638,22 @@ comp_update_blur_validity(compositor_t *c, int n_ext)
     }
 }
 
+/* Cursor position captured at the top of each composite, so blit_window_to_back
+ * can decide whether the pointer is over a window's traffic-light cluster. */
+static int s_cur_x = -1, s_cur_y = -1;
+
+/* True if (mx,my) is over the traffic-light cluster of a chromed window (screen
+ * coords). The cluster is the three 7px discs at btn_x = x+bd+8+7, spacing 22. */
+static int
+tl_cluster_hover(glyph_window_t *win, int mx, int my)
+{
+    if (win->chromeless) return 0;
+    int bd = GLYPH_BORDER_WIDTH, tb = GLYPH_TITLEBAR_HEIGHT;
+    int l = win->x + bd + 4;
+    int r = win->x + bd + 8 + 44 + 7 + 5;   /* right of the 3rd disc + slack */
+    return mx >= l && mx < r && my >= win->y && my < win->y + tb + bd;
+}
+
 static void
 blit_window_to_back(surface_t *back, glyph_window_t *win, int mode)
 {
@@ -780,9 +796,12 @@ blit_window_to_back(surface_t *back, glyph_window_t *win, int mode)
         uint32_t tl_r = tl_focused ? THEME_TL_RED    : 0x004E525C;
         uint32_t tl_y = tl_focused ? THEME_TL_YELLOW : 0x004E525C;
         uint32_t tl_g = tl_focused ? THEME_TL_GREEN  : 0x004E525C;
-        draw_traffic_light(back, btn_x, btn_cy, 7, tl_r, tl_focused ? 1 : 0);
-        draw_traffic_light(back, btn_x + 22, btn_cy, 7, tl_y, tl_focused ? 2 : 0);
-        draw_traffic_light(back, btn_x + 44, btn_cy, 7, tl_g, tl_focused ? 3 : 0);
+        /* macOS-style: the ×/−/+ glyphs appear only while the pointer is over
+         * the cluster; at rest the discs are plain. */
+        int hov = tl_cluster_hover(win, s_cur_x, s_cur_y);
+        draw_traffic_light(back, btn_x, btn_cy, 7, tl_r, hov ? 1 : 0);
+        draw_traffic_light(back, btn_x + 22, btn_cy, 7, tl_y, hov ? 2 : 0);
+        draw_traffic_light(back, btn_x + 44, btn_cy, 7, tl_g, hov ? 3 : 0);
 
         /* 7. Blit client area content with color keying (transparent pixels) */
         {
@@ -892,6 +911,8 @@ partial_flip(surface_t *fb, surface_t *back, glyph_rect_t r)
 int
 comp_composite(compositor_t *c)
 {
+    s_cur_x = c->cursor_x;   /* for traffic-light hover in blit_window_to_back */
+    s_cur_y = c->cursor_y;
     /* Dirty rects present now (added by event handlers this frame) are
      * "external" w.r.t. window content: any of them overlapping a frosted
      * window's footprint means the BACKDROP changed. Per-window content damage
@@ -1329,6 +1350,19 @@ comp_handle_mouse(compositor_t *c, uint8_t buttons, int16_t dx, int16_t dy,
         glyph_rect_t new_r = { c->cursor_x, c->cursor_y, GLYPH_CURSOR_W, GLYPH_CURSOR_H };
         comp_add_dirty(c, old_r);
         comp_add_dirty(c, new_r);
+        /* Traffic-light hover changed for a window? Redraw its titlebar so the
+         * ×/−/+ glyphs appear/disappear. */
+        for (int i = 0; i < c->nwindows; i++) {
+            glyph_window_t *win = c->windows[i];
+            if (!win->visible || !win->presented || win->chromeless)
+                continue;
+            if (tl_cluster_hover(win, old_cx, old_cy) !=
+                tl_cluster_hover(win, c->cursor_x, c->cursor_y)) {
+                glyph_rect_t tr = { win->x, win->y, win->surf_w,
+                    GLYPH_TITLEBAR_HEIGHT + GLYPH_BORDER_WIDTH + 2 };
+                comp_add_dirty(c, tr);
+            }
+        }
     }
 
     /* Wheel: deliver to the window under the cursor, independent of buttons
