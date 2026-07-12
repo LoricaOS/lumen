@@ -204,6 +204,14 @@ about_render(glyph_window_t *win)
         int tw2 = font_text_width(g_font_ui, 13, d2);
         int tw3 = font_text_width(g_font_ui, 13, d3);
         int tw4 = font_text_width(g_font_ui, 13, d4);
+        /* Amber warning callout box behind the two "v1 software" lines
+         * (matches the mockup's boxed warning). */
+        {
+            int bw = (tw1 > tw2 ? tw1 : tw2) + 32;
+            int bx = cx + (cw - bw) / 2;
+            draw_blend_rounded_rect(s, bx, y - 8, bw, 46, R_SM, 0x00FFAA55, 26);
+            draw_rounded_outline(s, bx, y - 8, bw, 46, R_SM, 1, 0x007A5A2E);
+        }
         font_draw_text(s, g_font_ui, 13, cx + (cw - tw1) / 2, y, d1, 0x00FFAA55);
         y += 17;
         font_draw_text(s, g_font_ui, 13, cx + (cw - tw2) / 2, y, d2, 0x00FFAA55);
@@ -271,6 +279,18 @@ about_render(glyph_window_t *win)
             int text_w = g_font_ui ? font_text_width(g_font_ui, 13, "Built with Claude Code") : 180;
             int total_unit = target_w + 8 + text_w;
             int lx = cx + (cw - total_unit) / 2;
+
+            /* Pill button behind the logo+label (matches the desktop mockup):
+             * a subtle raised chip on the frosted panel. */
+            {
+                int pad_x = 16, pad_y = 7;
+                int pw = total_unit + 2 * pad_x;
+                int ph = target_h + 2 * pad_y;
+                int px = cx + (cw - pw) / 2;
+                int py = by - pad_y;
+                draw_blend_rounded_rect(s, px, py, pw, ph, ph / 2, 0x00FFFFFF, 22);
+                draw_rounded_outline(s, px, py, pw, ph, ph / 2, 1, 0x002E3242);
+            }
 
             draw_blit_alpha_scaled(s, lx, by, target_w, target_h,
                                    s_claude_px, s_claude_w, s_claude_h);
