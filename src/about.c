@@ -152,6 +152,59 @@ load_claude_logo(void)
     if (got < sz) { free(s_claude_px); s_claude_px = NULL; s_claude_w = s_claude_h = 0; }
 }
 
+/* ---- About panel palette + small inline UI icons (~16px, monochrome) ---- */
+#define ABOUT_BG   0x00151824   /* opaque dark card body */
+
+static void
+about_center(surface_t *s, int cx, int cw, int y, int sz,
+             const char *str, uint32_t col)
+{
+    if (!g_font_ui) { draw_text_t(s, cx + 20, y, str, col); return; }
+    int tw = font_text_width(g_font_ui, sz, str);
+    font_draw_text(s, g_font_ui, sz, cx + (cw - tw) / 2, y, str, col);
+}
+
+static void icon_cpu(surface_t *s, int x, int y, uint32_t c)
+{
+    draw_rounded_outline(s, x + 3, y + 3, 10, 10, 2, 1, c);
+    draw_fill_rect(s, x + 6, y + 6, 4, 4, c);
+    for (int i = 0; i < 3; i++) {
+        int p = y + 4 + i * 3, q = x + 4 + i * 3;
+        draw_fill_rect(s, x, p, 3, 1, c);  draw_fill_rect(s, x + 13, p, 3, 1, c);
+        draw_fill_rect(s, q, y, 1, 3, c);  draw_fill_rect(s, q, y + 13, 1, 3, c);
+    }
+}
+static void icon_mem(surface_t *s, int x, int y, uint32_t c)
+{
+    draw_rounded_outline(s, x + 1, y + 3, 14, 8, 1, 1, c);
+    for (int i = 0; i < 4; i++) draw_fill_rect(s, x + 3 + i * 3, y + 5, 2, 4, c);
+    draw_fill_rect(s, x + 3, y + 11, 2, 2, c);
+    draw_fill_rect(s, x + 11, y + 11, 2, 2, c);
+}
+static void icon_disp(surface_t *s, int x, int y, uint32_t c)
+{
+    draw_rounded_outline(s, x + 1, y + 2, 14, 9, 2, 1, c);
+    draw_fill_rect(s, x + 6, y + 11, 4, 2, c);
+    draw_fill_rect(s, x + 4, y + 14, 8, 1, c);
+}
+static void icon_person(surface_t *s, int x, int y, uint32_t c)
+{
+    draw_circle_filled(s, x + 8, y + 5, 3, c);
+    for (int i = -6; i <= 6; i++) {
+        int h = 6 - (i * i) / 9;
+        if (h > 0) draw_fill_rect(s, x + 8 + i, y + 14 - h, 1, h, c);
+    }
+}
+static void icon_warn(surface_t *s, int x, int y, uint32_t c, uint32_t hole)
+{
+    for (int r = 0; r < 14; r++) {
+        int half = (r + 1) * 7 / 14;
+        draw_fill_rect(s, x + 8 - half, y + r, half * 2, 1, c);
+    }
+    draw_fill_rect(s, x + 7, y + 4, 2, 5, hole);
+    draw_fill_rect(s, x + 7, y + 11, 2, 2, hole);
+}
+
 /* ---- Custom render for About window ---- */
 
 static void
@@ -162,10 +215,11 @@ about_render(glyph_window_t *win)
     int cy = GLYPH_BORDER_WIDTH + GLYPH_TITLEBAR_HEIGHT;
     int cw = win->client_w;
 
-    /* Fill client area with key color for frosted transparency */
-    draw_fill_rect(s, cx, cy, cw, win->client_h, C_SHADOW);
+    /* Opaque dark card — a solid panel, not frosted glass, so the wallpaper
+     * (and its centered wordmark) no longer bleeds through the body. */
+    draw_fill_rect(s, cx, cy, cw, win->client_h, ABOUT_BG);
 
-    int y = cy + 16;
+    int y = cy + 18;
 
     /* LoricaOS logo (scaled to 25% — ~218x56) */
     if (s_logo_px && s_logo_w > 0) {
@@ -176,94 +230,77 @@ about_render(glyph_window_t *win)
         y += dh + 12;
     }
 
-    /* Version */
-    if (g_font_ui) {
-        const char *ver = "Version " AEGIS_VERSION;
-        int tw = font_text_width(g_font_ui, 16, ver);
-        font_draw_text(s, g_font_ui, 16, cx + (cw - tw) / 2, y, ver, 0x00B0B0C0);
-    } else {
-        draw_text_t(s, cx + 20, y, "Version " AEGIS_VERSION, 0x00B0B0C0);
-    }
-    y += 24;
+    /* Version + tagline (centered). */
+    about_center(s, cx, cw, y, 16, "Version " AEGIS_VERSION, 0x00C6CAD8);
+    y += 22;
+    about_center(s, cx, cw, y, 13,
+                 "Capability-secure, POSIX-compatible OS", 0x008089A0);
+    y += 26;
 
-    /* Tagline */
-    if (g_font_ui) {
-        const char *tag = "Capability-secure, POSIX-compatible OS";
-        int tw = font_text_width(g_font_ui, 14, tag);
-        font_draw_text(s, g_font_ui, 14, cx + (cw - tw) / 2, y, tag, 0x00808898);
-    }
-    y += 28;
-
-    /* v1 disclaimer — matches aegissite terminology */
-    if (g_font_ui) {
-        const char *d1 = "v1 software -- first public release";
-        const char *d2 = "not production-hardened";
-        const char *d3 = "The C kernel likely contains real,";
-        const char *d4 = "exploitable vulnerabilities.";
-        int tw1 = font_text_width(g_font_ui, 13, d1);
-        int tw2 = font_text_width(g_font_ui, 13, d2);
-        int tw3 = font_text_width(g_font_ui, 13, d3);
-        int tw4 = font_text_width(g_font_ui, 13, d4);
-        /* Amber warning callout box behind the two "v1 software" lines
-         * (matches the mockup's boxed warning). */
-        {
-            int bw = (tw1 > tw2 ? tw1 : tw2) + 32;
-            int bx = cx + (cw - bw) / 2;
-            draw_blend_rounded_rect(s, bx, y - 8, bw, 46, R_SM, 0x00FFAA55, 26);
-            draw_rounded_outline(s, bx, y - 8, bw, 46, R_SM, 1, 0x007A5A2E);
+    /* v1 warning — the whole thing inside ONE amber callout: a warning glyph +
+     * the two amber lines, then the dim explanation just below (no dangling
+     * line outside the box). */
+    {
+        const char *a1 = "v1 software -- first public release";
+        const char *a2 = "not production-hardened";
+        const char *d1 = "The C kernel likely contains real,";
+        const char *d2 = "exploitable vulnerabilities.";
+        int bx = cx + 26, bw = cw - 52, bh = 88;
+        draw_blend_rounded_rect(s, bx, y, bw, bh, R_MD, 0x00FFAA55, 24);
+        draw_rounded_outline(s, bx, y, bw, bh, R_MD, 1, 0x009C7030);
+        if (g_font_ui) {
+            icon_warn(s, bx + 18, y + 16, 0x00FFB454, ABOUT_BG);
+            int tx = bx + 46;
+            font_draw_text(s, g_font_ui, 13, tx, y + 15, a1, 0x00FFC676);
+            font_draw_text(s, g_font_ui, 13, tx, y + 32, a2, 0x00FFC676);
+            int c3 = bx + (bw - font_text_width(g_font_ui, 13, d1)) / 2;
+            int c4 = bx + (bw - font_text_width(g_font_ui, 13, d2)) / 2;
+            font_draw_text(s, g_font_ui, 13, c3, y + 55, d1, 0x00B7A08C);
+            font_draw_text(s, g_font_ui, 13, c4, y + 71, d2, 0x00B7A08C);
         }
-        font_draw_text(s, g_font_ui, 13, cx + (cw - tw1) / 2, y, d1, 0x00FFAA55);
-        y += 17;
-        font_draw_text(s, g_font_ui, 13, cx + (cw - tw2) / 2, y, d2, 0x00FFAA55);
-        y += 20;
-        font_draw_text(s, g_font_ui, 13, cx + (cw - tw3) / 2, y, d3, 0x00AA9080);
-        y += 17;
-        font_draw_text(s, g_font_ui, 13, cx + (cw - tw4) / 2, y, d4, 0x00AA9080);
-        y += 20;
+        y += bh + 20;
     }
 
     /* Separator */
-    draw_blend_rect(s, cx + 30, y, cw - 60, 1, 0x00FFFFFF, 20);
-    y += 16;
+    draw_blend_rect(s, cx + 26, y, cw - 52, 1, 0x00FFFFFF, 20);
+    y += 18;
 
-    /* System info */
-    char mem_str[64], cpu_str[64];
-    get_mem_total(mem_str, sizeof(mem_str));
-    get_cpu_info(cpu_str, sizeof(cpu_str));
-
-    char info[128];
-    snprintf(info, sizeof(info), "CPU: %s", cpu_str);
-    if (g_font_ui)
-        font_draw_text(s, g_font_ui, 14, cx + 24, y, info, C_TEXT);
-    y += 22;
-
-    snprintf(info, sizeof(info), "Memory: %s", mem_str);
-    if (g_font_ui)
-        font_draw_text(s, g_font_ui, 14, cx + 24, y, info, C_TEXT);
-    y += 22;
-
-    snprintf(info, sizeof(info), "Display: %dx%d", s_screen_w, s_screen_h);
-    if (g_font_ui)
-        font_draw_text(s, g_font_ui, 14, cx + 24, y, info, C_TEXT);
-    y += 30;
+    /* System info — icon + aligned label/value columns. */
+    {
+        char mem_str[64], cpu_str[64], disp[32];
+        get_mem_total(mem_str, sizeof(mem_str));
+        get_cpu_info(cpu_str, sizeof(cpu_str));
+        snprintf(disp, sizeof(disp), "%dx%d", s_screen_w, s_screen_h);
+        int ix = cx + 28, lx = ix + 28, vx = ix + 118;
+        uint32_t ic = 0x008792A6, lc = 0x00A7AEC0;
+        if (g_font_ui) {
+            icon_cpu(s, ix, y, ic);
+            font_draw_text(s, g_font_ui, 14, lx, y + 1, "CPU", lc);
+            font_draw_text(s, g_font_ui, 14, vx, y + 1, cpu_str, C_TEXT);
+            y += 26;
+            icon_mem(s, ix, y, ic);
+            font_draw_text(s, g_font_ui, 14, lx, y + 1, "Memory", lc);
+            font_draw_text(s, g_font_ui, 14, vx, y + 1, mem_str, C_TEXT);
+            y += 26;
+            icon_disp(s, ix, y, ic);
+            font_draw_text(s, g_font_ui, 14, lx, y + 1, "Display", lc);
+            font_draw_text(s, g_font_ui, 14, vx, y + 1, disp, C_TEXT);
+            y += 30;
+        }
+    }
 
     /* Separator */
-    draw_blend_rect(s, cx + 30, y, cw - 60, 1, 0x00FFFFFF, 20);
-    y += 16;
+    draw_blend_rect(s, cx + 26, y, cw - 52, 1, 0x00FFFFFF, 20);
+    y += 18;
 
-    /* Credits */
+    /* Credits — maintained by the LoricaOS project (an org now). */
     if (g_font_ui) {
-        font_draw_text(s, g_font_ui, 14, cx + 24, y,
-                       "Created by Dylan Hart", 0x00C0C0D0);
-        y += 20;
-        font_draw_text(s, g_font_ui, 13, cx + 24, y,
-                       "github.com/exec", 0x00808898);
-        y += 28;
-    } else {
-        draw_text_t(s, cx + 24, y, "Created by Dylan Hart", 0x00C0C0D0);
-        y += 20;
-        draw_text_t(s, cx + 24, y, "github.com/exec", 0x00808898);
-        y += 24;
+        icon_person(s, cx + 28, y, 0x008792A6);
+        font_draw_text(s, g_font_ui, 14, cx + 56, y + 1,
+                       "The LoricaOS project", 0x00B8BECE);
+        font_draw_text(s, g_font_ui, 13, cx + 56, y + 19,
+                       "github.com/LoricaOS", 0x008089A0);
+        y += 40;
     }
 
     /* Claude logo + attribution — pinned to bottom of window */
