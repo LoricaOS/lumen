@@ -488,14 +488,15 @@ static void draw_wifi_glyph(surface_t *s, int cx, int cy, uint32_t col)
 
 /* Draw the Wi-Fi icon in the top bar, just left of the volume cluster. Mirrors
  * taskbar.c's right-side geometry (clock at w-cw-12, then vol icon+track+gap). */
+/* Wi-Fi icon centre: one gap left of the speaker icon (glyph spans cx±10). */
+static int wifi_icon_cx(int screen_w)
+{
+    return topbar_volume_icon_x(screen_w, s_clock_str) - 26;
+}
+
 static void draw_wifi_status(surface_t *s, int screen_w)
 {
-    int cw = g_font_ui ? font_text_width(g_font_ui, 14, s_clock_str)
-                       : (int)strlen(s_clock_str) * 8;
-    int clock_x    = screen_w - cw - BAR_EDGE;
-    int vol_track  = clock_x - 18 /*VOL_GAP*/ - 56 /*VOL_TRACK_W*/;
-    int cluster_l  = vol_track - 16 /*VOL_ICON_W*/;
-    int cx = cluster_l - 14;                 /* icon center x */
+    int cx = wifi_icon_cx(screen_w);
     int cy = BAR_MARGIN_TOP + BAR_H - 7;  /* centered in the capsule */
     uint32_t col = (s_wifi_n > 0) ? THEME_TEXT : THEME_TEXT_DIM;
     draw_wifi_glyph(s, cx, cy, col);
@@ -513,12 +514,7 @@ static uint32_t batt_color(int pct)
  * (no AMD Data Fabric, no battery) and both light up on real hardware. */
 static void draw_hwmon_status(surface_t *s, int screen_w)
 {
-    int cw = g_font_ui ? font_text_width(g_font_ui, 14, s_clock_str)
-                       : (int)strlen(s_clock_str) * 8;
-    int clock_x   = screen_w - cw - BAR_EDGE;
-    int vol_track = clock_x - 18 - 56;
-    int cluster_l = vol_track - 16;
-    int wifi_cx   = cluster_l - 14;
+    int wifi_cx   = wifi_icon_cx(screen_w);
     int right     = wifi_cx - 20;            /* right edge, left of the Wi-Fi glyph */
     int ty        = (TOPBAR_HEIGHT - 13) / 2;
 
