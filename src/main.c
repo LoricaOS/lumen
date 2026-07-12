@@ -388,11 +388,11 @@ static void draw_wifi_status(surface_t *s, int screen_w)
 {
     int cw = g_font_ui ? font_text_width(g_font_ui, 14, s_clock_str)
                        : (int)strlen(s_clock_str) * 8;
-    int clock_x    = screen_w - cw - 12;
+    int clock_x    = screen_w - cw - BAR_EDGE;
     int vol_track  = clock_x - 18 /*VOL_GAP*/ - 56 /*VOL_TRACK_W*/;
     int cluster_l  = vol_track - 16 /*VOL_ICON_W*/;
     int cx = cluster_l - 14;                 /* icon center x */
-    int cy = TOPBAR_HEIGHT - 4;              /* dot near the bottom of the bar */
+    int cy = BAR_MARGIN_TOP + BAR_H - 7;  /* centered in the capsule */
     uint32_t col = (s_wifi_n > 0) ? THEME_TEXT : THEME_TEXT_DIM;
     draw_wifi_glyph(s, cx, cy, col);
 }
@@ -411,7 +411,7 @@ static void draw_hwmon_status(surface_t *s, int screen_w)
 {
     int cw = g_font_ui ? font_text_width(g_font_ui, 14, s_clock_str)
                        : (int)strlen(s_clock_str) * 8;
-    int clock_x   = screen_w - cw - 12;
+    int clock_x   = screen_w - cw - BAR_EDGE;
     int vol_track = clock_x - 18 - 56;
     int cluster_l = vol_track - 16;
     int wifi_cx   = cluster_l - 14;
