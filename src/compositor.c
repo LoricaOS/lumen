@@ -663,18 +663,36 @@ blit_window_to_back(surface_t *back, glyph_window_t *win, int mode)
         draw_window_shadow(back, win);
 
     if (win->frosted && win->chromeless && mode != BLIT_OPAQUE) {
-        /* Chromeless frosted window (dropdown terminal, fullscreen launcher).
-         * Panel = blur + the single dark tint; cached + stamped as one unit. */
+        /* Chromeless frosted window (dock, dropdown terminal, fullscreen
+         * launcher). Panel = blur + a dark tint (~75% opacity); cached + stamped
+         * as one unit. Its corners are rounded to WIN_CORNER_R like every other
+         * window — save the 4 corner blocks of the backdrop first, restore them
+         * after compositing (this is what makes the dock a rounded slab instead
+         * of a square-topped rect). */
+        int rr = WIN_CORNER_R;
+        int tw = win->surf_w, th = win->surf_h;
+        uint32_t corner_tl[WIN_CORNER_MAX * WIN_CORNER_MAX];
+        uint32_t corner_tr[WIN_CORNER_MAX * WIN_CORNER_MAX];
+        uint32_t corner_bl[WIN_CORNER_MAX * WIN_CORNER_MAX];
+        uint32_t corner_br[WIN_CORNER_MAX * WIN_CORNER_MAX];
+        save_corner_block(back, win->x,           win->y,           rr, corner_tl);
+        save_corner_block(back, win->x + tw - rr, win->y,           rr, corner_tr);
+        save_corner_block(back, win->x,           win->y + th - rr, rr, corner_bl);
+        save_corner_block(back, win->x + tw - rr, win->y + th - rr, rr, corner_br);
+
         if (!(mode == BLIT_FROST && panel_try_stamp(back, win))) {
             if (mode == BLIT_FROST)
-                draw_box_blur(back, win->x, win->y, win->surf_w, win->surf_h, 10);
-            draw_blend_rect(back, win->x, win->y, win->surf_w, win->surf_h,
-                            C_TERM_BG, 128);
+                draw_box_blur(back, win->x, win->y, tw, th, 10);
+            draw_blend_rect(back, win->x, win->y, tw, th, C_TERM_BG, 190);
             if (mode == BLIT_FROST)
                 panel_capture(back, win);
         }
-        draw_blit_keyed(back, win->x, win->y, src,
-                        win->surf_w, win->surf_h, C_TERM_BG);
+        draw_blit_keyed(back, win->x, win->y, src, tw, th, C_TERM_BG);
+
+        round_window_corner(back, win->x, win->y, tw, th, rr, 0, corner_tl);
+        round_window_corner(back, win->x, win->y, tw, th, rr, 1, corner_tr);
+        round_window_corner(back, win->x, win->y, tw, th, rr, 2, corner_bl);
+        round_window_corner(back, win->x, win->y, tw, th, rr, 3, corner_br);
     } else if (win->frosted && mode != BLIT_OPAQUE) {
         int bd = GLYPH_BORDER_WIDTH;
         int tb = GLYPH_TITLEBAR_HEIGHT;
