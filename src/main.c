@@ -327,6 +327,110 @@ static void set_volume(int v)
     syscall(SYS_AUDIO_VOLUME, (long)v);
 }
 
+/* ── Top-bar volume popup (a vertical slider dropdown) ────────────────────
+ * The bar shows only a speaker icon now; clicking it toggles this frosted
+ * popup, which carries a vertical track dragged to set the level. Mirrors the
+ * Aegis context menu's frosted-rounded-popup style. */
+static int vol_open;
+#define VOLP_W       46
+#define VOLP_H       150
+#define VOLP_PAD     16   /* track inset from the popup top/bottom */
+#define VOLP_TRACK_W 6
+#define VOLP_MR      10   /* corner radius */
+
+static glyph_rect_t
+vol_popup_rect(void)
+{
+    int ix = topbar_volume_icon_x(s_fb_w, s_clock_str);
+    int x = ix + 5 - VOLP_W / 2;   /* centre under the icon (~5px wide glyph) */
+    if (x < 4) x = 4;
+    if (x + VOLP_W > s_fb_w - 4) x = s_fb_w - 4 - VOLP_W;
+    int y = BAR_MARGIN_TOP + BAR_H + 6;          /* just below the capsule */
+    return (glyph_rect_t){x, y, VOLP_W, VOLP_H};
+}
+
+/* Vertical track geometry inside the popup: centre-x, top-y, height. */
+static void
+vol_track_geom(int *tx, int *ty, int *th)
+{
+    glyph_rect_t r = vol_popup_rect();
+    *tx = r.x + VOLP_W / 2;
+    *ty = r.y + VOLP_PAD;
+    *th = VOLP_H - 2 * VOLP_PAD;
+}
+
+/* Map a y within the track to 0..100 (top = 100, bottom = 0). */
+static int
+vol_from_y(int my)
+{
+    int tx, ty, th;
+    vol_track_geom(&tx, &ty, &th);
+    int v = (ty + th - my) * 100 / th;
+    if (v < 0) v = 0;
+    if (v > 100) v = 100;
+    return v;
+}
+
+static int
+vol_popup_hit(int mx, int my)
+{
+    if (!vol_open) return 0;
+    glyph_rect_t r = vol_popup_rect();
+    return mx >= r.x && mx < r.x + r.w && my >= r.y && my < r.y + r.h;
+}
+
+static void
+vol_popup_draw(surface_t *s)
+{
+    if (!vol_open) return;
+    glyph_rect_t r = vol_popup_rect();
+    int x = r.x, y = r.y, w = r.w, h = r.h;
+
+    /* Save the corner blocks before compositing so the rounded corners can
+     * restore the true backdrop (same technique as menu_draw). */
+    enum { MR = VOLP_MR };
+    uint32_t ctl[MR * MR], ctr[MR * MR], cbl[MR * MR], cbr[MR * MR];
+    for (int py = 0; py < MR; py++)
+        for (int px = 0; px < MR; px++) {
+            ctl[py * MR + px] = s->buf[(y + py) * s->pitch + x + px];
+            ctr[py * MR + px] = s->buf[(y + py) * s->pitch + x + w - MR + px];
+            cbl[py * MR + px] = s->buf[(y + h - MR + py) * s->pitch + x + px];
+            cbr[py * MR + px] = s->buf[(y + h - MR + py) * s->pitch + x + w - MR + px];
+        }
+
+    draw_box_blur(s, x, y, w, h, 10);
+    draw_blend_rect(s, x, y, w, h, THEME_SURFACE_2, 190);
+
+    for (int py = 0; py < MR; py++)
+        for (int px = 0; px < MR; px++) {
+            int dx = MR - px, dy = MR - py;
+            if (dx * dx + dy * dy > MR * MR) {
+                s->buf[(y + py) * s->pitch + x + px] = ctl[py * MR + px];
+                s->buf[(y + py) * s->pitch + x + w - 1 - px] =
+                    ctr[py * MR + (MR - 1 - px)];
+                s->buf[(y + h - 1 - py) * s->pitch + x + px] =
+                    cbl[(MR - 1 - py) * MR + px];
+                s->buf[(y + h - 1 - py) * s->pitch + x + w - 1 - px] =
+                    cbr[(MR - 1 - py) * MR + (MR - 1 - px)];
+            }
+        }
+
+    /* Subtle top/bottom border (match the menu). */
+    draw_blend_rect(s, x, y, w, 1, 0x00FFFFFF, 20);
+    draw_blend_rect(s, x, y + h - 1, w, 1, 0x00000000, 30);
+
+    /* Vertical track: faint background, accent fill from the bottom, knob. */
+    int tx, ty, th;
+    vol_track_geom(&tx, &ty, &th);
+    int tw = VOLP_TRACK_W;
+    draw_blend_rounded_rect(s, tx - tw / 2, ty, tw, th, tw / 2, 0x00FFFFFF, 55);
+    int fill = th * s_volume / 100;
+    if (fill > 0)
+        draw_blend_rounded_rect(s, tx - tw / 2, ty + th - fill, tw, fill,
+                                tw / 2, THEME_ACCENT, 255);
+    draw_circle_filled(s, tx, ty + th - fill, 6, 0x00FFFFFF);
+}
+
 /* ── Wi-Fi status (top-bar icon) + notifications ─────────────────────────── */
 #define SYS_NETCFG 500
 typedef struct { char ssid[33]; unsigned char channel, sec, connected, pad; } wifi_net_t;
@@ -511,6 +615,7 @@ overlay_draw_cb(surface_t *s, int w, int h)
 {
     (void)h;
     menu_draw(s);
+    vol_popup_draw(s);
     notify_draw(s, w);
 }
 
@@ -1024,13 +1129,14 @@ next_poll:
                 if (test_x >= fb_w) test_x = fb_w - 1;
                 if (test_y >= fb_h) test_y = fb_h - 1;
 
-                /* Volume slider drag (button held; x-only so the cursor can
-                 * leave the bar vertically). Released → stop dragging. */
+                /* Volume popup slider drag (button held; y maps to level).
+                 * Released → stop dragging. */
                 if (!(final_buttons & 1)) {
                     s_vol_drag = 0;
                 } else if (s_vol_drag) {
-                    set_volume(topbar_volume_from_x(test_x, fb_w, s_clock_str));
-                    comp_add_dirty(&comp, (glyph_rect_t){0, 0, fb_w, 28});
+                    set_volume(vol_from_y(test_y));
+                    comp_add_dirty(&comp, vol_popup_rect());
+                    comp_add_dirty(&comp, (glyph_rect_t){0, 0, fb_w, TOPBAR_HEIGHT});
                     activity = 1;
                 }
 
@@ -1096,17 +1202,36 @@ next_poll:
                         goto after_mouse;
                     }
 
-                    /* Top bar volume slider — press starts a drag */
-                    {
-                        int v = topbar_volume_at(test_x, test_y, fb_w, s_clock_str);
-                        if (v >= 0) {
-                            set_volume(v);
+                    /* Volume popup open: click inside the track starts a drag;
+                     * a click anywhere else (except the icon, handled next)
+                     * dismisses it. */
+                    if (vol_open && !topbar_volume_icon_hit(test_x, test_y, fb_w, s_clock_str)) {
+                        comp_add_dirty(&comp, vol_popup_rect());
+                        if (vol_popup_hit(test_x, test_y)) {
+                            set_volume(vol_from_y(test_y));
                             s_vol_drag = 1;
-                            comp_add_dirty(&comp, (glyph_rect_t){0, 0, fb_w, 28});
-                            comp_handle_mouse(&comp, final_buttons, total_dx, total_dy, total_scroll);
-                            activity = 1;
-                            goto after_mouse;
+                            comp_add_dirty(&comp, (glyph_rect_t){0, 0, fb_w, TOPBAR_HEIGHT});
+                        } else {
+                            vol_open = 0;   /* click outside → close */
                         }
+                        comp_handle_mouse(&comp, final_buttons, total_dx, total_dy, total_scroll);
+                        activity = 1;
+                        goto after_mouse;
+                    }
+
+                    /* Top-bar speaker icon → toggle the volume popup. */
+                    if (topbar_volume_icon_hit(test_x, test_y, fb_w, s_clock_str)) {
+                        comp_add_dirty(&comp, vol_popup_rect());
+                        vol_open = !vol_open;
+                        if (vol_open && menu_open) {   /* the two popups are exclusive */
+                            comp_add_dirty(&comp, menu_rect());
+                            menu_open = 0;
+                            menu_hover = -1;
+                        }
+                        comp_add_dirty(&comp, vol_popup_rect());
+                        comp_handle_mouse(&comp, final_buttons, total_dx, total_dy, total_scroll);
+                        activity = 1;
+                        goto after_mouse;
                     }
 
                     /* Top bar "Aegis" click */
@@ -1114,6 +1239,10 @@ next_poll:
                         comp_add_dirty(&comp, menu_rect());
                         menu_open = !menu_open;
                         menu_hover = -1;
+                        if (menu_open && vol_open) {   /* close the volume popup */
+                            comp_add_dirty(&comp, vol_popup_rect());
+                            vol_open = 0;
+                        }
                         comp_handle_mouse(&comp, final_buttons, total_dx, total_dy, total_scroll);
                         activity = 1;
                         goto after_mouse;
