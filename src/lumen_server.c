@@ -30,6 +30,8 @@ typedef struct {
     int             nwindows;
     uint32_t        next_id;
     int             is_panel;   /* created a panel (the dock) → gets the window list */
+    int             is_shell;   /* created a top-anchored panel (the desktop
+                                  * shell) → gets LUMEN_EV_MENU_STATE pushes */
 } lumen_client_t;
 
 struct proxy_window {
@@ -40,6 +42,9 @@ struct proxy_window {
     void           *shared;
     int             has_menu;   /* client published a top-bar app menu */
     lumen_set_menu_t menu;      /* shown in the top bar while focused */
+    unsigned        anchor;     /* LUMEN_PANEL_* — only meaningful for panels,
+                                 * remembered so RESIZE_SELF (dropdown grow/
+                                 * shrink) repositions correctly. */
 };
 
 static lumen_client_t *s_clients[LUMEN_MAX_CLIENTS];
@@ -286,10 +291,11 @@ static glyph_window_t *make_chromeless_window(int w, int h, int want_surface)
 
 /* Build a proxy_window + glyph_window, register with compositor, send the
  * lumen_window_created_t reply with SCM_RIGHTS memfd. style selects
- * geometry, chrome, and focus behavior (WSTYLE_*). */
+ * geometry, chrome, and focus behavior (WSTYLE_*). anchor (LUMEN_PANEL_*)
+ * only matters when style == WSTYLE_PANEL. */
 static int handle_create_common(compositor_t *comp, lumen_client_t *cli,
                                 int w, int h, const char *title, int style,
-                                int resizable, int ontop)
+                                int resizable, int ontop, unsigned anchor)
 {
     if (cli->nwindows >= LUMEN_MAX_WINDOWS_PER_CLIENT)
         goto err_reply;
@@ -299,6 +305,10 @@ static int handle_create_common(compositor_t *comp, lumen_client_t *cli,
          * size and recv_created_reply sizes its buffers from the reply. */
         w = comp->fb.w;
         h = comp->fb.h;
+    } else if (style == WSTYLE_PANEL && anchor == LUMEN_PANEL_TOP) {
+        /* Top panel (the desktop shell) is always stretched to full width —
+         * requested width is ignored, only height is honored. */
+        w = comp->fb.w;
     }
 
     size_t bufsz = (size_t)w * h * sizeof(uint32_t);
@@ -328,6 +338,7 @@ static int handle_create_common(compositor_t *comp, lumen_client_t *cli,
     pw->id     = cli->next_id++;
     pw->memfd  = memfd;
     pw->shared = shared;
+    pw->anchor = anchor;
 
     if (style == WSTYLE_PANEL || style == WSTYLE_FULLSCREEN) {
         /* No surface.buf: the compositor reads the client's shared buffer
@@ -358,8 +369,12 @@ static int handle_create_common(compositor_t *comp, lumen_client_t *cli,
     /* Panels are system chrome (the dock) — always on top; regular windows
      * opt in via LUMEN_WIN_FLAG_ONTOP. The fullscreen launcher stays normal. */
     pw->win->always_on_top = (style == WSTYLE_PANEL || ontop) ? 1 : 0;
-    if (style == WSTYLE_PANEL)
-        cli->is_panel = 1;   /* the dock wants the window list */
+    if (style == WSTYLE_PANEL) {
+        if (anchor == LUMEN_PANEL_TOP)
+            cli->is_shell = 1;  /* the desktop shell wants focused-menu pushes */
+        else
+            cli->is_panel = 1; /* the dock wants the window list */
+    }
 
     /* Created but not yet drawn: stay unpresented until the first DAMAGE so
      * the uninitialized (zero) buffer never flashes — fixes the launcher's
@@ -379,7 +394,11 @@ static int handle_create_common(compositor_t *comp, lumen_client_t *cli,
     if (style != WSTYLE_PANEL)
         pw->win->on_key = proxy_on_key;
 
-    if (style == WSTYLE_PANEL) {
+    if (style == WSTYLE_PANEL && anchor == LUMEN_PANEL_TOP) {
+        /* Top-anchored, full-width strip (the desktop shell's top bar). */
+        pw->win->x = 0;
+        pw->win->y = 0;
+    } else if (style == WSTYLE_PANEL) {
         /* Bottom-anchored, horizontally centered. Margin matches old dock. */
         pw->win->x = (comp->fb.w - pw->win->surf_w) / 2;
         pw->win->y = comp->fb.h - pw->win->surf_h - 10;
@@ -462,14 +481,15 @@ static int handle_create_window(compositor_t *comp, lumen_client_t *cli,
     int resizable = (req->flags & LUMEN_WIN_FLAG_RESIZABLE) ? 1 : 0;
     int ontop     = (req->flags & LUMEN_WIN_FLAG_ONTOP) ? 1 : 0;
     return handle_create_common(comp, cli, req->width, req->height,
-                                req->title, style, resizable, ontop);
+                                req->title, style, resizable, ontop,
+                                LUMEN_PANEL_BOTTOM);
 }
 
 static int handle_create_panel(compositor_t *comp, lumen_client_t *cli,
                                  const lumen_create_panel_t *req)
 {
     return handle_create_common(comp, cli, req->width, req->height, NULL,
-                                WSTYLE_PANEL, 0, 0);
+                                WSTYLE_PANEL, 0, 0, req->anchor);
 }
 
 static int handle_invoke(compositor_t *comp, const lumen_invoke_t *req)
@@ -582,6 +602,33 @@ void lumen_window_send_menu_invoke(glyph_window_t *win, uint32_t command)
     lumen_menu_invoke_t ev = { pw->id, command };
     write(pw->client->fd, &hdr, sizeof(hdr));
     write(pw->client->fd, &ev,  sizeof(ev));
+}
+
+/* Push the currently-focused window's menu to every is_shell client (the
+ * desktop shell's top-bar app-menu). Called whenever comp->windows_changed
+ * (focus/stacking changed) — same trigger as lumen_server_push_window_list,
+ * see main.c's main loop. col_count=0 (window_id=0) if nothing is focused or
+ * the focused window never published a menu — the shell shows nothing. */
+void lumen_server_push_focused_menu(compositor_t *comp)
+{
+    lumen_set_menu_t state;
+    memset(&state, 0, sizeof(state));
+    const lumen_set_menu_t *m = lumen_window_menu(comp->focused);
+    if (m) {
+        state = *m;
+        proxy_window_t *pw = proxy_for_window(comp->focused);
+        state.window_id = pw ? pw->id : 0;
+    }
+    lumen_msg_hdr_t hdr = { LUMEN_EV_MENU_STATE, sizeof(state) };
+    for (int i = 0; i < s_ncli; i++) {
+        lumen_client_t *cli = s_clients[i];
+        if (!cli || !cli->is_shell) continue;
+        /* Large frame (multi-KB) — write_full, else a short write desyncs
+         * the stream (same reasoning as SET_MENU). */
+        if (lumen_write_full(cli->fd, &hdr, sizeof(hdr)) != 0 ||
+            lumen_write_full(cli->fd, &state, sizeof(state)) != 0)
+            dprintf(2, "[LUMEN-SRV] push_focused_menu: write errno=%d\n", errno);
+    }
 }
 
 static int handle_drag_start(compositor_t *comp, lumen_client_t *cli,
@@ -766,6 +813,8 @@ static int handle_resize_self(compositor_t *comp, lumen_client_t *cli,
     if (!pw) goto err;
 
     int nw = (int)req->width, nh = (int)req->height;
+    if (pw->anchor == LUMEN_PANEL_TOP)
+        nw = comp->fb.w;   /* top panel is always full-width, like at create */
     if (nw < 1) nw = 1;
     if (nh < 1) nh = 1;
     if (nw > comp->fb.w) nw = comp->fb.w;
@@ -786,8 +835,13 @@ static int handle_resize_self(compositor_t *comp, lumen_client_t *cli,
     pw->win->blit_src = pw->shared;   /* chromeless: compositor reads this */
     pw->win->client_w = nw; pw->win->client_h = nh;
     pw->win->surf_w   = nw; pw->win->surf_h   = nh;
-    pw->win->x = (comp->fb.w - nw) / 2;      /* re-center like a panel */
-    pw->win->y = comp->fb.h - nh - 10;
+    if (pw->anchor == LUMEN_PANEL_TOP) {
+        pw->win->x = 0;
+        pw->win->y = 0;
+    } else {
+        pw->win->x = (comp->fb.w - nw) / 2;  /* re-center like the dock */
+        pw->win->y = comp->fb.h - nh - 10;
+    }
 
     lumen_window_created_t reply = {
         .status = 0, .window_id = pw->id,
@@ -877,6 +931,13 @@ static int lumen_server_read(compositor_t *comp, lumen_client_t *cli)
          * read desyncs the stream. */
         if (lumen_read_full(cli->fd, &req, sizeof(req)) != 0) return -1;
         return handle_set_menu(comp, cli, &req);
+    }
+    case LUMEN_OP_INVOKE_FOCUSED_MENU: {
+        if (hdr.len != (uint32_t)sizeof(lumen_invoke_focused_menu_t)) return -1;
+        lumen_invoke_focused_menu_t req;
+        if (read(cli->fd, &req, sizeof(req)) != (ssize_t)sizeof(req)) return -1;
+        lumen_window_send_menu_invoke(comp->focused, req.command);
+        return 1;
     }
     case LUMEN_OP_RESIZE_BUFFER: {
         if (hdr.len != (uint32_t)sizeof(lumen_resize_buffer_t)) return -1;

@@ -27,6 +27,10 @@ void lumen_proxy_request_resize(glyph_window_t *win, int cw, int ch);
  * this once per frame when comp->windows_changed is set. */
 void lumen_server_push_window_list(compositor_t *comp);
 
+/* Push the focused window's menu to the desktop shell (is_shell clients).
+ * Same call site/trigger as lumen_server_push_window_list. */
+void lumen_server_push_focused_menu(compositor_t *comp);
+
 /* Drag-and-drop event delivery to proxy windows (called from the
  * compositor while it brokers a drag). x,y are window-local; the
  * helpers convert to client-area coords like mouse events do. */
