@@ -105,7 +105,7 @@ desktop_bg_at(int y, int h)
     case 3:  /* Accent — accent-tinted gradient */
         return lerp_col(blend_col(THEME_ACCENT, THEME_DESKTOP_TOP, 96),
                         THEME_DESKTOP_BOT, y, h);
-    default: /* Aegis — the default top→bottom gradient */
+    default: /* LoricaOS — the default top→bottom gradient */
         return lerp_col(THEME_DESKTOP_TOP, THEME_DESKTOP_BOT, y, h);
     }
 }

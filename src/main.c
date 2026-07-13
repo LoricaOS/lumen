@@ -188,7 +188,7 @@ invoke_handler(compositor_t *comp, const char *name)
     if (!name) return;
     /* "lock" is an action, not a window: signal bastion (our parent) to raise
      * the lock screen — the same path as Ctrl+Alt+L and the (now external)
-     * Aegis-menu Lock item. Also freezes our own keyboard input (matches the
+     * LoricaOS-menu Lock item. Also freezes our own keyboard input (matches the
      * hotkey path) so keystrokes can't leak to the desktop while locked.
      * Lets clients (Settings → Lock Screen, the desktop shell) trigger a lock
      * without being a child of bastion themselves. */
@@ -201,7 +201,7 @@ invoke_handler(compositor_t *comp, const char *name)
     /* "about"/"reboot"/"poweroff" need in-process compositor/POWER-cap
      * access the desktop shell doesn't have (about_create is a built-in
      * window; reboot/poweroff need the POWER cap lumen carries) — routed
-     * here the same way the old in-process Aegis menu handled them inline. */
+     * here the same way the old in-process LoricaOS menu handled them inline. */
     if (strcmp(name, "about") == 0) {
         glyph_window_t *aw = about_create(s_fb_w, s_fb_h);
         if (aw) {
@@ -673,7 +673,7 @@ next_poll:
                 mouse_moved = 1;
             }
             if (mouse_moved) {
-                /* Top-bar/Aegis-menu/app-menu/volume-popup clicks are now
+                /* Top-bar/LoricaOS-menu/app-menu/volume-popup clicks are now
                  * handled by /bin/lumen-shell via the external window
                  * protocol (same mechanism as citadel-dock's dock clicks) —
                  * ordinary window hit-testing/dispatch covers it. */
