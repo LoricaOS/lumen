@@ -3,6 +3,7 @@
 #define LUMEN_SERVER_H
 
 #include "compositor.h"
+#include <lumen_proto.h>   /* lumen_set_menu_t (app menu accessors below) */
 
 #define LUMEN_MAX_CLIENTS 8
 
@@ -29,6 +30,12 @@ void lumen_server_push_window_list(compositor_t *comp);
 /* Drag-and-drop event delivery to proxy windows (called from the
  * compositor while it brokers a drag). x,y are window-local; the
  * helpers convert to client-area coords like mouse events do. */
+/* Top-bar app menu: the focused window's published menu (NULL if none), and a
+ * way to deliver a chosen item back to that window's client. Defined in
+ * lumen_proto.h (lumen_set_menu_t). */
+const lumen_set_menu_t *lumen_window_menu(glyph_window_t *win);
+void lumen_window_send_menu_invoke(glyph_window_t *win, uint32_t command);
+
 void lumen_proxy_send_drag_over(glyph_window_t *win, int x, int y, uint8_t op);
 void lumen_proxy_send_drag_leave(glyph_window_t *win);
 void lumen_proxy_send_drop(glyph_window_t *win, int x, int y, uint8_t op,

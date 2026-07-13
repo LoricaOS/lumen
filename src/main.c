@@ -502,6 +502,169 @@ static void draw_wifi_status(surface_t *s, int screen_w)
     draw_wifi_glyph(s, cx, cy, col);
 }
 
+/* ── Top-bar app menu (File/Edit/… for the focused window) ────────────────
+ * The focused external client publishes its menu via LUMEN_OP_SET_MENU. We
+ * draw the column titles in the bar (right of the brand icon) and, when one is
+ * open, a frosted dropdown mirroring the Aegis menu's style. A chosen item is
+ * delivered back to the client as LUMEN_EV_MENU_INVOKE. */
+static int appmenu_open  = -1;   /* open column index, or -1 */
+static int appmenu_hover = -1;   /* hovered item in the open dropdown */
+static int appmenu_col_x[LUMEN_MENU_MAX_COLS];  /* title hitboxes, set by draw */
+static int appmenu_col_w[LUMEN_MENU_MAX_COLS];
+static int appmenu_ncols;
+
+#define APPMENU_TITLE_PAD 10
+#define APPMENU_ITEM_H    26
+#define APPMENU_SEP_H     10
+
+static const lumen_set_menu_t *appmenu_current(void)
+{
+    return (s_comp && s_comp->focused) ? lumen_window_menu(s_comp->focused)
+                                       : NULL;
+}
+
+/* Column titles in the bar. Records per-title hitboxes for appmenu_col_at().
+ * Also closes an open menu when focus moves to a different window (its menu is
+ * gone or different). */
+static void appmenu_draw_titles(surface_t *s)
+{
+    static glyph_window_t *last_focus;
+    if (s_comp && s_comp->focused != last_focus) {
+        appmenu_open = -1;
+        appmenu_hover = -1;
+        last_focus = s_comp->focused;
+    }
+    appmenu_ncols = 0;
+    const lumen_set_menu_t *m = appmenu_current();
+    if (!m) return;
+
+    int fh = g_font_ui ? font_height(g_font_ui, 14) : 12;
+    int ty = BAR_MARGIN_TOP + (BAR_H - fh) / 2;
+    int x  = topbar_appmenu_x();
+    for (int c = 0; c < (int)m->col_count && c < LUMEN_MENU_MAX_COLS; c++) {
+        const char *title = m->cols[c].title;
+        int tw = g_font_ui ? font_text_width(g_font_ui, 14, title)
+                           : (int)strlen(title) * 8;
+        int w = tw + 2 * APPMENU_TITLE_PAD;
+        if (c == appmenu_open)
+            draw_blend_rounded_rect(s, x, BAR_MARGIN_TOP + 2, w, BAR_H - 4, 6,
+                                    0x00FFFFFF, 34);
+        if (g_font_ui)
+            font_draw_text(s, g_font_ui, 14, x + APPMENU_TITLE_PAD, ty, title,
+                           0x00FFFFFF);
+        appmenu_col_x[c] = x;
+        appmenu_col_w[c] = w;
+        appmenu_ncols = c + 1;
+        x += w;
+    }
+}
+
+static glyph_rect_t appmenu_dropdown_rect(void)
+{
+    const lumen_set_menu_t *m = appmenu_current();
+    if (!m || appmenu_open < 0 || appmenu_open >= (int)m->col_count)
+        return (glyph_rect_t){0, 0, 0, 0};
+    const lumen_menu_col_t *col = &m->cols[appmenu_open];
+    int wmax = 90;
+    for (int i = 0; i < (int)col->item_count; i++) {
+        const char *lb = col->items[i].label;
+        if (!lb[0]) continue;
+        int w = g_font_ui ? font_text_width(g_font_ui, 14, lb) : (int)strlen(lb) * 8;
+        if (w > wmax) wmax = w;
+    }
+    int w = wmax + 32;
+    int h = 8;
+    for (int i = 0; i < (int)col->item_count; i++)
+        h += col->items[i].label[0] ? APPMENU_ITEM_H : APPMENU_SEP_H;
+    h += 8;
+    int x = (appmenu_open < appmenu_ncols) ? appmenu_col_x[appmenu_open]
+                                           : topbar_appmenu_x();
+    int y = BAR_MARGIN_TOP + BAR_H + 4;
+    if (x + w > s_fb_w - 4) x = s_fb_w - 4 - w;
+    if (x < 4) x = 4;
+    return (glyph_rect_t){x, y, w, h};
+}
+
+static void appmenu_dropdown_draw(surface_t *s)
+{
+    const lumen_set_menu_t *m = appmenu_current();
+    if (!m || appmenu_open < 0 || appmenu_open >= (int)m->col_count) return;
+    const lumen_menu_col_t *col = &m->cols[appmenu_open];
+    glyph_rect_t r = appmenu_dropdown_rect();
+    int x = r.x, y = r.y, w = r.w, h = r.h;
+
+    enum { MR = 8 };
+    uint32_t ctl[MR * MR], ctr[MR * MR], cbl[MR * MR], cbr[MR * MR];
+    for (int py = 0; py < MR; py++)
+        for (int px = 0; px < MR; px++) {
+            ctl[py * MR + px] = s->buf[(y + py) * s->pitch + x + px];
+            ctr[py * MR + px] = s->buf[(y + py) * s->pitch + x + w - MR + px];
+            cbl[py * MR + px] = s->buf[(y + h - MR + py) * s->pitch + x + px];
+            cbr[py * MR + px] = s->buf[(y + h - MR + py) * s->pitch + x + w - MR + px];
+        }
+    draw_box_blur(s, x, y, w, h, 10);
+    draw_blend_rect(s, x, y, w, h, THEME_SURFACE_2, 190);
+    for (int py = 0; py < MR; py++)
+        for (int px = 0; px < MR; px++) {
+            int dx = MR - px, dy = MR - py;
+            if (dx * dx + dy * dy > MR * MR) {
+                s->buf[(y + py) * s->pitch + x + px] = ctl[py * MR + px];
+                s->buf[(y + py) * s->pitch + x + w - 1 - px] = ctr[py * MR + (MR - 1 - px)];
+                s->buf[(y + h - 1 - py) * s->pitch + x + px] = cbl[(MR - 1 - py) * MR + px];
+                s->buf[(y + h - 1 - py) * s->pitch + x + w - 1 - px] =
+                    cbr[(MR - 1 - py) * MR + (MR - 1 - px)];
+            }
+        }
+    draw_blend_rect(s, x, y, w, 1, 0x00FFFFFF, 20);
+    draw_blend_rect(s, x, y + h - 1, w, 1, 0x00000000, 30);
+
+    int iy = y + 8;
+    for (int i = 0; i < (int)col->item_count; i++) {
+        const char *lb = col->items[i].label;
+        if (!lb[0]) {
+            draw_blend_rect(s, x + 10, iy + APPMENU_SEP_H / 2 - 1, w - 20, 1,
+                            THEME_BORDER, 120);
+            iy += APPMENU_SEP_H;
+            continue;
+        }
+        if (i == appmenu_hover)
+            draw_blend_rounded_rect(s, x + 4, iy, w - 8, APPMENU_ITEM_H, 6,
+                                    THEME_SELECTION, 150);
+        uint32_t fg = (i == appmenu_hover) ? THEME_TEXT_ON_ACCENT : THEME_TEXT;
+        if (g_font_ui)
+            font_draw_text(s, g_font_ui, 14, x + 14, iy + (APPMENU_ITEM_H - 14) / 2,
+                           lb, fg);
+        iy += APPMENU_ITEM_H;
+    }
+}
+
+/* Which column title is at (mx,my), or -1. */
+static int appmenu_col_at(int mx, int my)
+{
+    if (my < BAR_MARGIN_TOP || my >= BAR_MARGIN_TOP + BAR_H) return -1;
+    for (int c = 0; c < appmenu_ncols; c++)
+        if (mx >= appmenu_col_x[c] && mx < appmenu_col_x[c] + appmenu_col_w[c])
+            return c;
+    return -1;
+}
+
+/* Which dropdown item is at (mx,my) (skipping separators), or -1. */
+static int appmenu_item_at(int mx, int my)
+{
+    const lumen_set_menu_t *m = appmenu_current();
+    if (!m || appmenu_open < 0 || appmenu_open >= (int)m->col_count) return -1;
+    const lumen_menu_col_t *col = &m->cols[appmenu_open];
+    glyph_rect_t r = appmenu_dropdown_rect();
+    if (mx < r.x || mx >= r.x + r.w || my < r.y || my >= r.y + r.h) return -1;
+    int iy = r.y + 8;
+    for (int i = 0; i < (int)col->item_count; i++) {
+        if (!col->items[i].label[0]) { iy += APPMENU_SEP_H; continue; }
+        if (my >= iy && my < iy + APPMENU_ITEM_H) return i;
+        iy += APPMENU_ITEM_H;
+    }
+    return -1;
+}
+
 static uint32_t batt_color(int pct)
 {
     if (pct > 50) return THEME_OK;
@@ -602,6 +765,7 @@ desktop_draw_cb(surface_t *s, int w, int h)
     topbar_draw(s, w, s_clock_str, s_volume, s_comp ? s_comp->full_redraw : 1);
     draw_wifi_status(s, w);
     draw_hwmon_status(s, w);
+    appmenu_draw_titles(s);
 }
 
 /* ---- Overlay callback -- drawn after windows (menu + notification toast) ---- */
@@ -612,6 +776,7 @@ overlay_draw_cb(surface_t *s, int w, int h)
     (void)h;
     menu_draw(s);
     vol_popup_draw(s);
+    appmenu_dropdown_draw(s);
     notify_draw(s, w);
 }
 
@@ -1144,6 +1309,14 @@ next_poll:
                         comp_add_dirty(&comp, menu_rect());
                 }
 
+                /* Update app-menu dropdown hover */
+                if (appmenu_open >= 0) {
+                    int old_hover = appmenu_hover;
+                    appmenu_hover = appmenu_item_at(test_x, test_y);
+                    if (appmenu_hover != old_hover)
+                        comp_add_dirty(&comp, appmenu_dropdown_rect());
+                }
+
                 /* Handle button press */
                 if ((final_buttons & 1) && !(comp.prev_buttons & 1)) {
                     /* Context menu click */
@@ -1198,6 +1371,34 @@ next_poll:
                         goto after_mouse;
                     }
 
+                    /* App menu open: a title click switches columns, an item
+                     * click invokes it (delivered to the focused window's
+                     * client), anything else closes. */
+                    if (appmenu_open >= 0) {
+                        int col  = appmenu_col_at(test_x, test_y);
+                        int item = appmenu_item_at(test_x, test_y);
+                        comp_add_dirty(&comp, appmenu_dropdown_rect());
+                        comp_add_dirty(&comp, (glyph_rect_t){0, 0, fb_w, TOPBAR_HEIGHT});
+                        if (col >= 0) {
+                            appmenu_open = (col == appmenu_open) ? -1 : col;
+                            appmenu_hover = -1;
+                            comp_add_dirty(&comp, appmenu_dropdown_rect());
+                        } else if (item >= 0) {
+                            const lumen_set_menu_t *m = appmenu_current();
+                            uint32_t cmd = m->cols[appmenu_open].items[item].command;
+                            appmenu_open = -1;
+                            appmenu_hover = -1;
+                            if (s_comp->focused)
+                                lumen_window_send_menu_invoke(s_comp->focused, cmd);
+                        } else {
+                            appmenu_open = -1;   /* click outside → close */
+                            appmenu_hover = -1;
+                        }
+                        comp_handle_mouse(&comp, final_buttons, total_dx, total_dy, total_scroll);
+                        activity = 1;
+                        goto after_mouse;
+                    }
+
                     /* Volume popup open: click inside the track starts a drag;
                      * a click anywhere else (except the icon, handled next)
                      * dismisses it. */
@@ -1215,14 +1416,43 @@ next_poll:
                         goto after_mouse;
                     }
 
+                    /* App menu title click → open that column (closes the
+                     * other top-bar popups first). */
+                    {
+                        int col = appmenu_col_at(test_x, test_y);
+                        if (col >= 0) {
+                            if (menu_open) {
+                                comp_add_dirty(&comp, menu_rect());
+                                menu_open = 0;
+                                menu_hover = -1;
+                            }
+                            if (vol_open) {
+                                comp_add_dirty(&comp, vol_popup_rect());
+                                vol_open = 0;
+                            }
+                            appmenu_open = col;
+                            appmenu_hover = -1;
+                            comp_add_dirty(&comp, appmenu_dropdown_rect());
+                            comp_add_dirty(&comp, (glyph_rect_t){0, 0, fb_w, TOPBAR_HEIGHT});
+                            comp_handle_mouse(&comp, final_buttons, total_dx, total_dy, total_scroll);
+                            activity = 1;
+                            goto after_mouse;
+                        }
+                    }
+
                     /* Top-bar speaker icon → toggle the volume popup. */
                     if (topbar_volume_icon_hit(test_x, test_y, fb_w, s_clock_str)) {
                         comp_add_dirty(&comp, vol_popup_rect());
                         vol_open = !vol_open;
-                        if (vol_open && menu_open) {   /* the two popups are exclusive */
+                        if (vol_open && menu_open) {   /* the top-bar popups are exclusive */
                             comp_add_dirty(&comp, menu_rect());
                             menu_open = 0;
                             menu_hover = -1;
+                        }
+                        if (vol_open && appmenu_open >= 0) {
+                            comp_add_dirty(&comp, appmenu_dropdown_rect());
+                            appmenu_open = -1;
+                            appmenu_hover = -1;
                         }
                         comp_add_dirty(&comp, vol_popup_rect());
                         comp_handle_mouse(&comp, final_buttons, total_dx, total_dy, total_scroll);
@@ -1238,6 +1468,11 @@ next_poll:
                         if (menu_open && vol_open) {   /* close the volume popup */
                             comp_add_dirty(&comp, vol_popup_rect());
                             vol_open = 0;
+                        }
+                        if (menu_open && appmenu_open >= 0) {
+                            comp_add_dirty(&comp, appmenu_dropdown_rect());
+                            appmenu_open = -1;
+                            appmenu_hover = -1;
                         }
                         comp_handle_mouse(&comp, final_buttons, total_dx, total_dy, total_scroll);
                         activity = 1;

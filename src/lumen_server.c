@@ -16,6 +16,7 @@
 #include "compositor.h"
 #include "lumen_server.h"
 #include "lumen_proto.h"
+#include <lumen_client.h>   /* lumen_read_full (large SET_MENU body) */
 
 /* LUMEN_MAX_CLIENTS lives in lumen_server.h (main.c sizes its idle-poll
  * fd array with it). */
@@ -37,6 +38,8 @@ struct proxy_window {
     uint32_t        id;
     int             memfd;
     void           *shared;
+    int             has_menu;   /* client published a top-bar app menu */
+    lumen_set_menu_t menu;      /* shown in the top bar while focused */
 };
 
 static lumen_client_t *s_clients[LUMEN_MAX_CLIENTS];
@@ -525,6 +528,62 @@ static int handle_set_admin(compositor_t *comp, lumen_client_t *cli,
     return 1;
 }
 
+static int handle_set_menu(compositor_t *comp, lumen_client_t *cli,
+                           const lumen_set_menu_t *req)
+{
+    proxy_window_t *pw = find_proxy(cli, req->window_id);
+    if (!pw) return 0;  /* not this client's window — ignore */
+    /* Clamp col_count/item_count defensively (client is untrusted). */
+    pw->menu = *req;
+    if (pw->menu.col_count > LUMEN_MENU_MAX_COLS)
+        pw->menu.col_count = LUMEN_MENU_MAX_COLS;
+    for (int c = 0; c < pw->menu.col_count; c++)
+        if (pw->menu.cols[c].item_count > LUMEN_MENU_MAX_ITEMS)
+            pw->menu.cols[c].item_count = LUMEN_MENU_MAX_ITEMS;
+    pw->has_menu = pw->menu.col_count > 0;
+    /* If this window is focused, the top-bar menu changed → redraw the bar. */
+    if (comp->focused == pw->win)
+        comp->full_redraw = 1;
+    return 1;
+}
+
+/* ── Top-bar app-menu accessors (used by main.c's compositor loop) ────── */
+
+/* Find the external-client proxy that owns a given glyph window, by scanning
+ * the client table. Avoids type-punning win->priv, which built-in windows
+ * (About, dropdown terminal) may use for their own state. */
+static proxy_window_t *proxy_for_window(glyph_window_t *win)
+{
+    if (!win) return NULL;
+    for (int i = 0; i < s_ncli; i++) {
+        lumen_client_t *cli = s_clients[i];
+        if (!cli) continue;
+        for (int w = 0; w < cli->nwindows; w++)
+            if (cli->windows[w] && cli->windows[w]->win == win)
+                return cli->windows[w];
+    }
+    return NULL;
+}
+
+/* The focused window's published menu, or NULL if it has none (built-in
+ * windows, or clients that never called set_menu). */
+const lumen_set_menu_t *lumen_window_menu(glyph_window_t *win)
+{
+    proxy_window_t *pw = proxy_for_window(win);
+    return (pw && pw->has_menu) ? &pw->menu : NULL;
+}
+
+/* Deliver a chosen menu item back to the window's client. */
+void lumen_window_send_menu_invoke(glyph_window_t *win, uint32_t command)
+{
+    proxy_window_t *pw = proxy_for_window(win);
+    if (!pw) return;
+    lumen_msg_hdr_t hdr = { LUMEN_EV_MENU_INVOKE, sizeof(lumen_menu_invoke_t) };
+    lumen_menu_invoke_t ev = { pw->id, command };
+    write(pw->client->fd, &hdr, sizeof(hdr));
+    write(pw->client->fd, &ev,  sizeof(ev));
+}
+
 static int handle_drag_start(compositor_t *comp, lumen_client_t *cli,
                              const lumen_drag_start_t *req)
 {
@@ -810,6 +869,14 @@ static int lumen_server_read(compositor_t *comp, lumen_client_t *cli)
         lumen_set_admin_t req;
         if (read(cli->fd, &req, sizeof(req)) != (ssize_t)sizeof(req)) return -1;
         return handle_set_admin(comp, cli, &req);
+    }
+    case LUMEN_OP_SET_MENU: {
+        if (hdr.len != (uint32_t)sizeof(lumen_set_menu_t)) return -1;
+        lumen_set_menu_t req;
+        /* Large body (multi-KB) — read_full over short reads, else a partial
+         * read desyncs the stream. */
+        if (lumen_read_full(cli->fd, &req, sizeof(req)) != 0) return -1;
+        return handle_set_menu(comp, cli, &req);
     }
     case LUMEN_OP_RESIZE_BUFFER: {
         if (hdr.len != (uint32_t)sizeof(lumen_resize_buffer_t)) return -1;
