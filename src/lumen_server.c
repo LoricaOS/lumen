@@ -305,10 +305,13 @@ static int handle_create_common(compositor_t *comp, lumen_client_t *cli,
          * size and recv_created_reply sizes its buffers from the reply. */
         w = comp->fb.w;
         h = comp->fb.h;
-    } else if (style == WSTYLE_PANEL && anchor == LUMEN_PANEL_TOP) {
-        /* Top panel (the desktop shell) is always stretched to full width —
-         * requested width is ignored, only height is honored. */
-        w = comp->fb.w;
+    } else if (style == WSTYLE_PANEL) {
+        /* Clamp to the screen (mirrors handle_resize_self) — also lets a
+         * panel client learn the real fb dimensions by requesting an
+         * oversized panel and reading back the clamped reply, the same way
+         * a fullscreen window's reply reveals fb.w/fb.h. */
+        if (w > comp->fb.w) w = comp->fb.w;
+        if (h > comp->fb.h) h = comp->fb.h;
     }
 
     size_t bufsz = (size_t)w * h * sizeof(uint32_t);
@@ -395,8 +398,13 @@ static int handle_create_common(compositor_t *comp, lumen_client_t *cli,
         pw->win->on_key = proxy_on_key;
 
     if (style == WSTYLE_PANEL && anchor == LUMEN_PANEL_TOP) {
-        /* Top-anchored, full-width strip (the desktop shell's top bar). */
-        pw->win->x = 0;
+        /* Top-anchored, horizontally centered on its own requested width
+         * (the desktop shell's top bar — narrow at rest so the compositor's
+         * uniform frosted-panel tint, which covers this window's whole
+         * footprint, doesn't tint a margin band the bar never occupied;
+         * full-width while a dropdown/toast needs the room, which centers
+         * to x=0 for free). Flush to the true top (y=0). */
+        pw->win->x = (comp->fb.w - pw->win->surf_w) / 2;
         pw->win->y = 0;
     } else if (style == WSTYLE_PANEL) {
         /* Bottom-anchored, horizontally centered. Margin matches old dock. */
@@ -611,6 +619,15 @@ void lumen_window_send_menu_invoke(glyph_window_t *win, uint32_t command)
  * the focused window never published a menu — the shell shows nothing. */
 void lumen_server_push_focused_menu(compositor_t *comp)
 {
+    /* windows_changed (this function's trigger, see main.c) fires on far
+     * more than just focus changes — any create/destroy/raise anywhere.
+     * Dedup on the focused window's identity so boot-time window churn
+     * (many unrelated creates) doesn't repeatedly push an unchanged state to
+     * every shell client; only a genuine focus change re-sends. */
+    static glyph_window_t *s_last_pushed = (glyph_window_t *)(intptr_t)-1;
+    if (comp->focused == s_last_pushed) return;
+    s_last_pushed = comp->focused;
+
     lumen_set_menu_t state;
     memset(&state, 0, sizeof(state));
     const lumen_set_menu_t *m = lumen_window_menu(comp->focused);
@@ -813,8 +830,6 @@ static int handle_resize_self(compositor_t *comp, lumen_client_t *cli,
     if (!pw) goto err;
 
     int nw = (int)req->width, nh = (int)req->height;
-    if (pw->anchor == LUMEN_PANEL_TOP)
-        nw = comp->fb.w;   /* top panel is always full-width, like at create */
     if (nw < 1) nw = 1;
     if (nh < 1) nh = 1;
     if (nw > comp->fb.w) nw = comp->fb.w;
@@ -836,7 +851,7 @@ static int handle_resize_self(compositor_t *comp, lumen_client_t *cli,
     pw->win->client_w = nw; pw->win->client_h = nh;
     pw->win->surf_w   = nw; pw->win->surf_h   = nh;
     if (pw->anchor == LUMEN_PANEL_TOP) {
-        pw->win->x = 0;
+        pw->win->x = (comp->fb.w - nw) / 2;  /* re-center on the new width */
         pw->win->y = 0;
     } else {
         pw->win->x = (comp->fb.w - nw) / 2;  /* re-center like the dock */
@@ -867,7 +882,25 @@ static int lumen_server_read(compositor_t *comp, lumen_client_t *cli)
     ssize_t n = read(cli->fd, &hdr, sizeof(hdr));
     if (n == 0) return -1;
     if (n < 0)  return (errno == EAGAIN) ? 0 : -1;
-    if (n != (ssize_t)sizeof(hdr)) return -1;
+    if (n != (ssize_t)sizeof(hdr)) {
+        /* Short read of the header: a message has genuinely started
+         * arriving (the EAGAIN/0 cases above already covered "nothing
+         * ready"), so finish it rather than silently desyncing the framed
+         * stream against whatever the client sends next — a client sends
+         * the header and body as two separate write()s (see
+         * lumen_window_resize_self and friends in glyph's lumen_client.c),
+         * so a short read here isn't hypothetical. Same reasoning as
+         * lumen_read_full (the client-side equivalent), just resuming from
+         * an already-partial buffer instead of empty. */
+        size_t got = (size_t)n;
+        while (got < sizeof(hdr)) {
+            ssize_t r = read(cli->fd, (char *)&hdr + got, sizeof(hdr) - got);
+            if (r > 0) { got += (size_t)r; continue; }
+            if (r == 0) return -1;
+            if (errno == EINTR || errno == EAGAIN) continue;
+            return -1;
+        }
+    }
 
     /* For every fixed-size opcode, require the client-declared hdr.len to
      * exactly match the kernel-side struct size before reading the body.
@@ -879,49 +912,49 @@ static int lumen_server_read(compositor_t *comp, lumen_client_t *cli)
     case LUMEN_OP_CREATE_WINDOW: {
         if (hdr.len != (uint32_t)sizeof(lumen_create_window_t)) return -1;
         lumen_create_window_t req;
-        if (read(cli->fd, &req, sizeof(req)) != (ssize_t)sizeof(req)) return -1;
+        if (lumen_read_full(cli->fd, &req, sizeof(req)) != 0) return -1;
         return handle_create_window(comp, cli, &req);
     }
     case LUMEN_OP_DAMAGE: {
         if (hdr.len != (uint32_t)sizeof(lumen_damage_t)) return -1;
         lumen_damage_t req;
-        if (read(cli->fd, &req, sizeof(req)) != (ssize_t)sizeof(req)) return -1;
+        if (lumen_read_full(cli->fd, &req, sizeof(req)) != 0) return -1;
         return handle_damage(comp, cli, req.window_id);
     }
     case LUMEN_OP_SET_TITLE: {
         if (hdr.len != (uint32_t)sizeof(lumen_set_title_t)) return -1;
         lumen_set_title_t req;
-        if (read(cli->fd, &req, sizeof(req)) != (ssize_t)sizeof(req)) return -1;
+        if (lumen_read_full(cli->fd, &req, sizeof(req)) != 0) return -1;
         return 0;
     }
     case LUMEN_OP_DESTROY_WINDOW: {
         if (hdr.len != (uint32_t)sizeof(lumen_destroy_window_t)) return -1;
         lumen_destroy_window_t req;
-        if (read(cli->fd, &req, sizeof(req)) != (ssize_t)sizeof(req)) return -1;
+        if (lumen_read_full(cli->fd, &req, sizeof(req)) != 0) return -1;
         return handle_destroy_window(comp, cli, req.window_id);
     }
     case LUMEN_OP_CREATE_PANEL: {
         if (hdr.len != (uint32_t)sizeof(lumen_create_panel_t)) return -1;
         lumen_create_panel_t req;
-        if (read(cli->fd, &req, sizeof(req)) != (ssize_t)sizeof(req)) return -1;
+        if (lumen_read_full(cli->fd, &req, sizeof(req)) != 0) return -1;
         return handle_create_panel(comp, cli, &req);
     }
     case LUMEN_OP_INVOKE: {
         if (hdr.len != (uint32_t)sizeof(lumen_invoke_t)) return -1;
         lumen_invoke_t req;
-        if (read(cli->fd, &req, sizeof(req)) != (ssize_t)sizeof(req)) return -1;
+        if (lumen_read_full(cli->fd, &req, sizeof(req)) != 0) return -1;
         return handle_invoke(comp, &req);
     }
     case LUMEN_OP_DRAG_START: {
         if (hdr.len != (uint32_t)sizeof(lumen_drag_start_t)) return -1;
         lumen_drag_start_t req;
-        if (read(cli->fd, &req, sizeof(req)) != (ssize_t)sizeof(req)) return -1;
+        if (lumen_read_full(cli->fd, &req, sizeof(req)) != 0) return -1;
         return handle_drag_start(comp, cli, &req);
     }
     case LUMEN_OP_SET_ADMIN: {
         if (hdr.len != (uint32_t)sizeof(lumen_set_admin_t)) return -1;
         lumen_set_admin_t req;
-        if (read(cli->fd, &req, sizeof(req)) != (ssize_t)sizeof(req)) return -1;
+        if (lumen_read_full(cli->fd, &req, sizeof(req)) != 0) return -1;
         return handle_set_admin(comp, cli, &req);
     }
     case LUMEN_OP_SET_MENU: {
@@ -935,26 +968,26 @@ static int lumen_server_read(compositor_t *comp, lumen_client_t *cli)
     case LUMEN_OP_INVOKE_FOCUSED_MENU: {
         if (hdr.len != (uint32_t)sizeof(lumen_invoke_focused_menu_t)) return -1;
         lumen_invoke_focused_menu_t req;
-        if (read(cli->fd, &req, sizeof(req)) != (ssize_t)sizeof(req)) return -1;
+        if (lumen_read_full(cli->fd, &req, sizeof(req)) != 0) return -1;
         lumen_window_send_menu_invoke(comp->focused, req.command);
         return 1;
     }
     case LUMEN_OP_RESIZE_BUFFER: {
         if (hdr.len != (uint32_t)sizeof(lumen_resize_buffer_t)) return -1;
         lumen_resize_buffer_t req;
-        if (read(cli->fd, &req, sizeof(req)) != (ssize_t)sizeof(req)) return -1;
+        if (lumen_read_full(cli->fd, &req, sizeof(req)) != 0) return -1;
         return handle_resize_buffer(comp, cli, &req);
     }
     case LUMEN_OP_ACTIVATE_WINDOW: {
         if (hdr.len != (uint32_t)sizeof(lumen_activate_window_t)) return -1;
         lumen_activate_window_t req;
-        if (read(cli->fd, &req, sizeof(req)) != (ssize_t)sizeof(req)) return -1;
+        if (lumen_read_full(cli->fd, &req, sizeof(req)) != 0) return -1;
         return handle_activate_window(comp, cli, &req);
     }
     case LUMEN_OP_RESIZE_SELF: {
         if (hdr.len != (uint32_t)sizeof(lumen_resize_self_t)) return -1;
         lumen_resize_self_t req;
-        if (read(cli->fd, &req, sizeof(req)) != (ssize_t)sizeof(req)) return -1;
+        if (lumen_read_full(cli->fd, &req, sizeof(req)) != 0) return -1;
         return handle_resize_self(comp, cli, &req);
     }
     default: {
