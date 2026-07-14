@@ -34,6 +34,22 @@ read_file_str(const char *path, char *buf, int bufsz)
     return n;
 }
 
+/* get_os_version — the actual LoricaOS release version, from
+ * /etc/lorica-version (baked in at rootfs-build time from the top-level
+ * VERSION file, tools/build-rootfs.sh). Falls back to the compile-time
+ * AEGIS_VERSION (lumen's OWN component version, e.g. "1.2.2") only if that
+ * file is missing — it used to be the only thing shown here, which drifts
+ * from the actual OS version since components release on their own
+ * cadence (lumen bumping to fix an internal bug doesn't mean LoricaOS
+ * itself shipped a new release). */
+static void
+get_os_version(char *out, int outsz)
+{
+    if (read_file_str("/etc/lorica-version", out, outsz) > 0)
+        return;
+    snprintf(out, outsz, "%s", AEGIS_VERSION);
+}
+
 /* Parse "MemTotal: XXXXX kB" from /proc/meminfo */
 static void
 get_mem_total(char *out, int outsz)
@@ -286,7 +302,13 @@ about_render(glyph_window_t *win)
     }
 
     /* Version + tagline (centered). */
-    about_center(s, cx, cw, y, 16, "Version " AEGIS_VERSION, 0x00C6CAD8);
+    {
+        char osver[32];
+        char verline[48];
+        get_os_version(osver, sizeof(osver));
+        snprintf(verline, sizeof(verline), "Version %s", osver);
+        about_center(s, cx, cw, y, 16, verline, 0x00C6CAD8);
+    }
     y += 22;
     about_center(s, cx, cw, y, 13,
                  "Capability-secure, POSIX-compatible OS", 0x008089A0);
