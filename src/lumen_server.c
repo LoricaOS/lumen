@@ -624,10 +624,6 @@ void lumen_server_push_focused_menu(compositor_t *comp)
      * Dedup on the focused window's identity so boot-time window churn
      * (many unrelated creates) doesn't repeatedly push an unchanged state to
      * every shell client; only a genuine focus change re-sends. */
-    static glyph_window_t *s_last_pushed = (glyph_window_t *)(intptr_t)-1;
-    if (comp->focused == s_last_pushed) return;
-    s_last_pushed = comp->focused;
-
     lumen_set_menu_t state;
     memset(&state, 0, sizeof(state));
     const lumen_set_menu_t *m = lumen_window_menu(comp->focused);
@@ -636,6 +632,17 @@ void lumen_server_push_focused_menu(compositor_t *comp)
         proxy_window_t *pw = proxy_for_window(comp->focused);
         state.window_id = pw ? pw->id : 0;
     }
+    /* Dedup on the MENU CONTENT, not the focused-window pointer: focus flapping
+     * between two menu-less windows (both empty menus) otherwise re-pushes the
+     * identical 4360-byte frame every windows_changed. That flood (and its
+     * interleave with resize replies) desynced the shell's stream — the top-bar-
+     * click bug. Only a genuine content change is re-sent. */
+    static lumen_set_menu_t s_last;
+    static int s_have = 0;
+    if (s_have && memcmp(&s_last, &state, sizeof(state)) == 0) return;
+    s_last = state;
+    s_have = 1;
+
     lumen_msg_hdr_t hdr = { LUMEN_EV_MENU_STATE, sizeof(state) };
     for (int i = 0; i < s_ncli; i++) {
         lumen_client_t *cli = s_clients[i];
