@@ -550,6 +550,65 @@ panel_footprint(glyph_window_t *win, int back_w, int back_h,
     *ox = x0; *oy = y0; *ow = x1 - x0; *oh = y1 - y0;
 }
 
+/* ── Panel cut-out (C_PANEL_CLEAR) ───────────────────────────────────────
+ * A panel is frosted across its whole rectangle. A panel that has grown to
+ * hold a dropdown is mostly empty space, and frosting that would put a
+ * translucent slab across the screen — so the client fills the empty space
+ * with C_PANEL_CLEAR and we restore the untouched desktop there.
+ *
+ * panel_clear_save stashes the backdrop before the frost runs and reports
+ * whether any cut-out pixels exist at all (the common case is none, and then
+ * nothing is copied); panel_clear_restore puts those pixels back afterwards. */
+static uint32_t *s_clear_save;
+static size_t    s_clear_cap;
+
+static int
+panel_clear_save(surface_t *back, glyph_window_t *win, const uint32_t *src)
+{
+    int x0, y0, cw, ch;
+    panel_footprint(win, back->w, back->h, &x0, &y0, &cw, &ch);
+    if (cw <= 0 || ch <= 0) return 0;
+
+    int sx = x0 - win->x, sy = y0 - win->y;   /* clip offset into src */
+    int any = 0;
+    for (int r = 0; r < ch && !any; r++) {
+        const uint32_t *srow = &src[(size_t)(sy + r) * win->surface.pitch + sx];
+        for (int c = 0; c < cw; c++)
+            if (srow[c] == C_PANEL_CLEAR) { any = 1; break; }
+    }
+    if (!any) return 0;
+
+    size_t need = (size_t)cw * ch;
+    if (need > s_clear_cap) {
+        uint32_t *nb = realloc(s_clear_save, need * sizeof(uint32_t));
+        if (!nb) return 0;               /* no save → skip the cut-out */
+        s_clear_save = nb; s_clear_cap = need;
+    }
+    for (int r = 0; r < ch; r++)
+        memcpy(&s_clear_save[(size_t)r * cw],
+               &back->buf[(size_t)(y0 + r) * back->pitch + x0],
+               (size_t)cw * sizeof(uint32_t));
+    return 1;
+}
+
+static void
+panel_clear_restore(surface_t *back, glyph_window_t *win, const uint32_t *src)
+{
+    int x0, y0, cw, ch;
+    panel_footprint(win, back->w, back->h, &x0, &y0, &cw, &ch);
+    if (cw <= 0 || ch <= 0 || !s_clear_save) return;
+
+    int sx = x0 - win->x, sy = y0 - win->y;
+    for (int r = 0; r < ch; r++) {
+        const uint32_t *srow = &src[(size_t)(sy + r) * win->surface.pitch + sx];
+        uint32_t *drow = &back->buf[(size_t)(y0 + r) * back->pitch + x0];
+        const uint32_t *save = &s_clear_save[(size_t)r * cw];
+        for (int c = 0; c < cw; c++)
+            if (srow[c] == C_PANEL_CLEAR)
+                drow[c] = save[c];
+    }
+}
+
 /* Cache hit: stamp the cached panel into the footprint. Returns 1 on hit, 0 on
  * miss (caller must render the panel then call panel_capture). */
 static int
@@ -698,6 +757,12 @@ blit_window_to_back(surface_t *back, glyph_window_t *win, int mode)
         save_corner_block(back, win->x,           win->y + th - rr, rr, corner_bl);
         save_corner_block(back, win->x + tw - rr, win->y + th - rr, rr, corner_br);
 
+        /* A panel is frosted across its whole rectangle, but a panel that has
+         * grown to hold a dropdown is mostly empty space that must stay plain
+         * desktop. The client marks that space with C_PANEL_CLEAR; save the
+         * backdrop first so those pixels can be put back after the frost. */
+        int has_clear = panel_clear_save(back, win, src);
+
         if (!(mode == BLIT_FROST && panel_try_stamp(back, win))) {
             if (mode == BLIT_FROST)
                 draw_box_blur(back, win->x, win->y, tw, th, 10);
@@ -706,6 +771,9 @@ blit_window_to_back(surface_t *back, glyph_window_t *win, int mode)
                 panel_capture(back, win);
         }
         draw_blit_keyed(back, win->x, win->y, src, tw, th, C_TERM_BG);
+
+        if (has_clear)
+            panel_clear_restore(back, win, src);
 
         round_window_corner(back, win->x, win->y, tw, th, rr, 0, corner_tl);
         round_window_corner(back, win->x, win->y, tw, th, rr, 1, corner_tr);
