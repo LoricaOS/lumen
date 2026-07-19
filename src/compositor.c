@@ -182,6 +182,8 @@ comp_has_anim(compositor_t *c)
         else
             any = 1;
     }
+    if (screenshot_active())          /* keep frames flowing for flash/preview */
+        any = 1;
     return any;
 }
 
@@ -985,6 +987,8 @@ comp_composite(compositor_t *c)
         /* Overlay (frosted glass dock etc.) -- after windows, before flip */
         if (c->on_draw_overlay)
             c->on_draw_overlay(&c->back, c->back.w, c->back.h);
+
+        screenshot_draw_overlay(c);   /* PrintScreen flash + corner preview */
 
         draw_dnd_ghost(c);
 

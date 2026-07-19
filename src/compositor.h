@@ -93,6 +93,11 @@ void comp_add_dirty(compositor_t *c, glyph_rect_t r);
 int comp_composite(compositor_t *c);
 void comp_handle_mouse(compositor_t *c, uint8_t buttons, int16_t dx, int16_t dy,
                        int16_t scroll);
+
+/* screenshot.c — PrintScreen capture + flash + corner preview. */
+void screenshot_take(compositor_t *c);
+void screenshot_draw_overlay(compositor_t *c);
+int  screenshot_active(void);
 /* Begin drag-and-drop on behalf of src (validated by lumen_server).
  * Ignored if the left button is not currently held. */
 void comp_dnd_start(compositor_t *c, glyph_window_t *src, uint8_t op,

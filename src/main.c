@@ -606,6 +606,15 @@ main(void)
                             break;  /* final byte */
                     }
 
+                    /* PrintScreen (the kernel emits ESC[p for HID usage 0x46):
+                     * a GLOBAL screenshot, handled here before any focus/PTY
+                     * dispatch so it fires regardless of what's focused. */
+                    if (slen == 3 && seq[2] == 'p') {
+                        screenshot_take(&comp);
+                        activity = 1;
+                        goto next_poll;
+                    }
+
                     int mfd = (comp.focused && comp.focused->tag >= 0)
                               ? comp.focused->tag : -1;
                     if (mfd >= 0) {
