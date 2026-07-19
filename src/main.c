@@ -444,13 +444,20 @@ main(void)
                 activity = 1;
         }
 
-        /* Push the open-window list to the dock, and the focused window's
-         * menu to the desktop shell, when focus/stacking changed. */
+        /* Push the open-window list to the dock when focus/stacking changed. */
         if (comp.windows_changed) {
             comp.windows_changed = 0;
             lumen_server_push_window_list(&comp);
-            lumen_server_push_focused_menu(&comp);
         }
+        /* The focused window's menu goes to the desktop shell EVERY iteration,
+         * not just on windows_changed. That flag means "created/destroyed/
+         * raised" and several paths move comp.focused without setting it (the
+         * dropdown terminal hiding, for one), so the bar kept showing the menu
+         * of whatever was focused at the last create — usually nothing. This
+         * call is self-deduplicating: it builds the state and returns early
+         * unless the CONTENT changed, so the steady-state cost is one memcmp
+         * per frame and nothing goes on the wire. */
+        lumen_server_push_focused_menu(&comp);
 
         /* Poll keyboard (stdin, raw mode, non-blocking via VMIN=0) */
         n = read(0, &kbd_byte, 1);

@@ -569,9 +569,18 @@ static int handle_set_menu(compositor_t *comp, lumen_client_t *cli,
         if (pw->menu.cols[c].item_count > LUMEN_MENU_MAX_ITEMS)
             pw->menu.cols[c].item_count = LUMEN_MENU_MAX_ITEMS;
     pw->has_menu = pw->menu.col_count > 0;
-    /* If this window is focused, the top-bar menu changed → redraw the bar. */
-    if (comp->focused == pw->win)
+    /* If this window is focused, the top bar's menu just changed — push it.
+     *
+     * An app publishes its menu AFTER creating its window, so the focus change
+     * that created it already pushed the (still empty) state and nothing fires
+     * afterwards: windows_changed covers create/destroy/raise, not "the focused
+     * window's menu changed". The bar therefore never learned about File/Edit
+     * at all. full_redraw alone was enough back when the compositor drew the
+     * bar in-process; the bar is its own client now and only sees pushes. */
+    if (comp->focused == pw->win) {
         comp->full_redraw = 1;
+        lumen_server_push_focused_menu(comp);
+    }
     return 1;
 }
 
@@ -698,30 +707,48 @@ static int handle_destroy_window(compositor_t *comp, lumen_client_t *cli,
 
 /* Send a lumen_window_created_t reply carrying `memfd` via SCM_RIGHTS (the
  * create/resize reply shape). memfd < 0 sends no ancillary fd (error reply). */
+/* Send a reply frame (header + body) plus, optionally, a memfd.
+ *
+ * Client sockets are O_NONBLOCK (see the accept path), so sendmsg can send
+ * FEWER bytes than asked — and a truncated frame desyncs the client for good:
+ * it reads the partial body as the next header, sees op=0/len=0, consumes
+ * nothing, and spins. That is the top-bar-freeze bug. Loop until the whole
+ * frame is out, exactly like lumen_write_full does for pushes; SCM_RIGHTS
+ * rides the first chunk (it needs at least one data byte with it). */
 static void send_window_reply(int fd, const lumen_window_created_t *data, int memfd)
 {
     lumen_msg_hdr_t rhdr = { 0, sizeof(*data) };
-    struct iovec iov[2] = {
-        { .iov_base = &rhdr, .iov_len = sizeof(rhdr) },
-        { .iov_base = (void *)data, .iov_len = sizeof(*data) },
-    };
-    struct msghdr msg;
-    memset(&msg, 0, sizeof(msg));
-    msg.msg_iov = iov; msg.msg_iovlen = 2;
+    uint8_t frame[sizeof(rhdr) + sizeof(*data)];
+    memcpy(frame, &rhdr, sizeof(rhdr));
+    memcpy(frame + sizeof(rhdr), data, sizeof(*data));
 
-    char cmsgbuf[CMSG_SPACE(sizeof(int))];
-    if (memfd >= 0) {
-        msg.msg_control = cmsgbuf;
-        msg.msg_controllen = sizeof(cmsgbuf);
-        struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
-        cmsg->cmsg_level = SOL_SOCKET;
-        cmsg->cmsg_type  = SCM_RIGHTS;
-        cmsg->cmsg_len   = CMSG_LEN(sizeof(int));
-        memcpy(CMSG_DATA(cmsg), &memfd, sizeof(int));
-        msg.msg_controllen = cmsg->cmsg_len;
-    }
-    if (sendmsg(fd, &msg, 0) < 0)
+    size_t off = 0;
+    while (off < sizeof(frame)) {
+        struct iovec iov = { .iov_base = frame + off,
+                             .iov_len  = sizeof(frame) - off };
+        struct msghdr msg;
+        memset(&msg, 0, sizeof(msg));
+        msg.msg_iov = &iov; msg.msg_iovlen = 1;
+
+        char cmsgbuf[CMSG_SPACE(sizeof(int))];
+        if (memfd >= 0 && off == 0) {
+            msg.msg_control = cmsgbuf;
+            msg.msg_controllen = sizeof(cmsgbuf);
+            struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+            cmsg->cmsg_level = SOL_SOCKET;
+            cmsg->cmsg_type  = SCM_RIGHTS;
+            cmsg->cmsg_len   = CMSG_LEN(sizeof(int));
+            memcpy(CMSG_DATA(cmsg), &memfd, sizeof(int));
+            msg.msg_controllen = cmsg->cmsg_len;
+        }
+
+        ssize_t n = sendmsg(fd, &msg, 0);
+        if (n > 0) { off += (size_t)n; continue; }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
+            continue;                     /* buffer full: the client is behind */
         dprintf(2, "[LUMEN-SRV] sendmsg reply failed errno=%d\n", errno);
+        return;
+    }
 }
 
 /* Client acked a LUMEN_EV_RESIZED: hand back a fresh buffer at the new client
