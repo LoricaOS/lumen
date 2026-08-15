@@ -584,6 +584,25 @@ static int handle_set_menu(compositor_t *comp, lumen_client_t *cli,
     return 1;
 }
 
+/* Glyph <= 1.2.2 used an 8x16 fixed menu frame. Keep accepting it while
+ * installed apps migrate to the smaller 6x12 frame used by Glyph 1.2.3. */
+#define LEGACY_MENU_MAX_COLS  8
+#define LEGACY_MENU_MAX_ITEMS 16
+typedef struct {
+    char     title[LUMEN_MENU_LABEL_LEN];
+    uint16_t item_count;
+    uint16_t _pad;
+    lumen_menu_item_t items[LEGACY_MENU_MAX_ITEMS];
+} legacy_menu_col_t;
+typedef struct {
+    uint32_t window_id;
+    uint16_t col_count;
+    uint16_t _pad;
+    legacy_menu_col_t cols[LEGACY_MENU_MAX_COLS];
+} legacy_set_menu_t;
+_Static_assert(sizeof(legacy_set_menu_t) == 4360,
+               "legacy menu wire size changed");
+
 /* ── Top-bar app-menu accessors (used by main.c's compositor loop) ────── */
 
 /* Find the external-client proxy that owns a given glyph window, by scanning
@@ -992,11 +1011,28 @@ static int lumen_server_read(compositor_t *comp, lumen_client_t *cli)
         return handle_set_admin(comp, cli, &req);
     }
     case LUMEN_OP_SET_MENU: {
-        if (hdr.len != (uint32_t)sizeof(lumen_set_menu_t)) return -1;
         lumen_set_menu_t req;
-        /* Large body (multi-KB) — read_full over short reads, else a partial
-         * read desyncs the stream. */
-        if (lumen_read_full(cli->fd, &req, sizeof(req)) != 0) return -1;
+        if (hdr.len == (uint32_t)sizeof(req)) {
+            if (lumen_read_full(cli->fd, &req, sizeof(req)) != 0) return -1;
+        } else if (hdr.len == (uint32_t)sizeof(legacy_set_menu_t)) {
+            legacy_set_menu_t old;
+            if (lumen_read_full(cli->fd, &old, sizeof(old)) != 0) return -1;
+            memset(&req, 0, sizeof(req));
+            req.window_id = old.window_id;
+            req.col_count = old.col_count < LUMEN_MENU_MAX_COLS
+                          ? old.col_count : LUMEN_MENU_MAX_COLS;
+            for (int c = 0; c < req.col_count; c++) {
+                memcpy(req.cols[c].title, old.cols[c].title,
+                       sizeof(req.cols[c].title));
+                req.cols[c].item_count =
+                    old.cols[c].item_count < LUMEN_MENU_MAX_ITEMS
+                    ? old.cols[c].item_count : LUMEN_MENU_MAX_ITEMS;
+                memcpy(req.cols[c].items, old.cols[c].items,
+                       req.cols[c].item_count * sizeof(lumen_menu_item_t));
+            }
+        } else {
+            return -1;
+        }
         return handle_set_menu(comp, cli, &req);
     }
     case LUMEN_OP_INVOKE_FOCUSED_MENU: {
