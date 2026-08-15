@@ -229,8 +229,8 @@ bin/lumen                         the compositor (stripped)
 etc/aegis/caps.d/lumen            its capability policy
 usr/share/fonts/Inter-Regular.ttf
 usr/share/fonts/JetBrainsMono-Regular.ttf
-usr/share/logo.raw                Aegis desktop logo
-usr/share/claude.raw              "Built with Claude Code" mark
+usr/share/logo.raw                LoricaOS desktop logo
+usr/share/wallpaper.raw           default desktop wallpaper
 ```
 
 The fonts ship here so that every component depending on lumen inherits them.
@@ -266,8 +266,8 @@ graphical stack — everything else in the desktop declares `depends=lumen`.
 ├── assets/
 │   ├── Inter-Regular.ttf          desktop UI font
 │   ├── JetBrainsMono-Regular.ttf  monospace/terminal font
-│   ├── logo.raw                   Aegis logo (width/height header + RGBA)
-│   └── claude.raw                 "Built with Claude Code" mark
+│   ├── logo.raw                   LoricaOS logo (width/height header + RGBA)
+│   └── wallpaper.raw              default desktop wallpaper
 ├── tools/
 │   ├── fetch-glyph.sh     fetch + unpack the pinned glyph toolkit artifact
 │   └── pack.sh            build + sign lumen.hpkg
