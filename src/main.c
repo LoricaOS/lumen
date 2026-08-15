@@ -19,6 +19,7 @@
 #include "compositor.h"
 #include "terminal.h"
 #include "about.h"
+#include "error_viewer.h"
 #include "lumen_server.h"
 #include <image_load.h>
 
@@ -231,6 +232,11 @@ invoke_handler(compositor_t *comp, const char *name)
     if (strcmp(name, "applications") == 0) {
         long pid = spawn_external_client("/bin/applications");
         dprintf(2, "[LUMEN] window_opened=applications pid=%ld\n", pid);
+        if (pid < 0) {
+            char detail[96];
+            snprintf(detail, sizeof(detail), "launch failed (error %ld)", pid);
+            error_viewer_report(comp, "applications", detail);
+        }
         return;
     }
     /* Everything else resolves through the /apps bundle registry. A
@@ -243,6 +249,11 @@ invoke_handler(compositor_t *comp, const char *name)
     }
     long pid = spawn_external_client(app.exec);
     dprintf(2, "[LUMEN] window_opened=%s pid=%ld\n", app.id, pid);
+    if (pid < 0) {
+        char detail[96];
+        snprintf(detail, sizeof(detail), "launch failed (error %ld)", pid);
+        error_viewer_report(comp, app.id, detail);
+    }
 }
 
 /* boot_mark — timestamped boot-profiling milestone on CLOCK_MONOTONIC (same
@@ -334,6 +345,7 @@ main(void)
 
     /* Start external window server */
     int lumen_srv_fd = lumen_server_init();
+    int lumen_srv_errno = errno;
     if (lumen_srv_fd < 0)
         dprintf(2, "[LUMEN] warning: could not open /run/lumen.sock\n");
 
@@ -413,6 +425,14 @@ main(void)
         }
     }
 
+    if (lumen_srv_fd < 0) {
+        char detail[96];
+        snprintf(detail, sizeof(detail),
+                 "could not publish /run/lumen.sock (errno=%d)",
+                 lumen_srv_errno);
+        error_viewer_report(&comp, "Lumen", detail);
+    }
+
     /* Clock update counter */
     int clock_counter = 0;
 
@@ -434,6 +454,8 @@ main(void)
          * MAX_PROCESSES slot (the GUI would stop spawning after ~63 opens). */
         while (waitpid(-1, NULL, WNOHANG) > 0)
             ;
+
+        error_viewer_poll(&comp);
 
         /* Service external window clients */
         if (lumen_srv_fd >= 0) {

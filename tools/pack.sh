@@ -5,7 +5,7 @@
 # ECDSA-P256/SHA-256 signature. lumen is class=system (it needs the POWER cap),
 # so herald installs its whole payload tree verbatim. Payload:
 #   bin/lumen                       the compositor (stripped)
-#   etc/aegis/caps.d/lumen          its cap policy (service FB THREAD_CREATE PROC_READ POWER)
+#   etc/aegis/caps.d/lumen          its least-privilege compositor policy
 #   usr/share/fonts/*.ttf           toolkit fonts (every GUI app needs these)
 #   usr/share/{logo,claude,wallpaper}.raw  logo + desktop wallpaper
 set -eu
