@@ -424,8 +424,7 @@ protocol client. Only the dropdown remains embedded.
 
 `about_create` builds a 400×500 frosted glyph window and installs `about_render`
 as its renderer. It loads two RGBA assets (each a `[width, height]` header
-followed by pixels): the Aegis logo (`/usr/share/logo.raw`) and the Claude mark
-(`/usr/share/claude.raw`).
+followed by pixels): the LoricaOS logo (`/usr/share/logo.raw`) and wallpaper.
 
 `about_render` fills the client area with the frost key color and lays out,
 top to bottom: the scaled logo, the version string
@@ -433,7 +432,8 @@ top to bottom: the scaled logo, the version string
 tagline, the v1 software disclaimer (first public release, not production
 hardened — the same warning shown once at every startup), system info read from
 `/proc/meminfo` (CPU core count, total memory) and the actual display
-resolution, credits, and a bottom-pinned "Built with Claude Code" mark.
+resolution, credits, and a bottom-pinned model attribution covering OpenAI and
+Anthropic.
 
 The CPU/memory reads from `/proc` are the concrete use of lumen's `PROC_READ`
 capability.

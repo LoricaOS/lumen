@@ -192,37 +192,7 @@ soften_logo(void)
     s_logo_h = dh;
 }
 
-/* ---- Claude logo loading ---- */
-
-static uint32_t *s_claude_px;
-static int s_claude_w, s_claude_h;
-
 static int s_screen_w, s_screen_h;  /* actual display resolution */
-
-static void
-load_claude_logo(void)
-{
-    int fd = open("/usr/share/claude.raw", O_RDONLY);
-    if (fd < 0) return;
-    uint32_t hdr[2];
-    if (read(fd, hdr, 8) != 8) { close(fd); return; }
-    s_claude_w = (int)hdr[0];
-    s_claude_h = (int)hdr[1];
-    if (s_claude_w <= 0 || s_claude_h <= 0 || s_claude_w > 400 || s_claude_h > 400) {
-        close(fd); s_claude_w = s_claude_h = 0; return;
-    }
-    size_t sz = (size_t)(s_claude_w * s_claude_h) * 4;
-    s_claude_px = malloc(sz);
-    if (!s_claude_px) { close(fd); s_claude_w = s_claude_h = 0; return; }
-    size_t got = 0;
-    while (got < sz) {
-        ssize_t n = read(fd, (char *)s_claude_px + got, sz - got);
-        if (n <= 0) break;
-        got += (size_t)n;
-    }
-    close(fd);
-    if (got < sz) { free(s_claude_px); s_claude_px = NULL; s_claude_w = s_claude_h = 0; }
-}
 
 /* ---- About panel palette + small inline UI icons (~16px, monochrome) ---- */
 #define ABOUT_BG   0x00151824   /* opaque dark card body */
@@ -382,47 +352,19 @@ about_render(glyph_window_t *win)
         y += 40;
     }
 
-    /* Claude logo + attribution — pinned to bottom of window */
+    /* Model attribution — pinned to the bottom without vendor artwork. */
     {
-        int target_h = 24;
-        int by = cy + win->client_h - target_h - 12;  /* 12px from bottom */
-
-        if (s_claude_px && s_claude_w > 0) {
-            int target_w = s_claude_w * target_h / s_claude_h;
-            if (target_w <= 0) target_w = 24;
-
-            /* Center the logo+text as a unit */
-            int text_w = g_font_ui ? font_text_width(g_font_ui, 13, "Built with Claude Code") : 180;
-            int total_unit = target_w + 8 + text_w;
-            int lx = cx + (cw - total_unit) / 2;
-
-            /* Pill button behind the logo+label (matches the desktop mockup):
-             * a subtle raised chip on the frosted panel. */
-            {
-                int pad_x = 16, pad_y = 7;
-                int pw = total_unit + 2 * pad_x;
-                int ph = target_h + 2 * pad_y;
-                int px = cx + (cw - pw) / 2;
-                int py = by - pad_y;
-                draw_blend_rounded_rect(s, px, py, pw, ph, ph / 2, 0x00FFFFFF, 22);
-                draw_rounded_outline(s, px, py, pw, ph, ph / 2, 1, 0x002E3242);
-            }
-
-            draw_blit_alpha_scaled(s, lx, by, target_w, target_h,
-                                   s_claude_px, s_claude_w, s_claude_h);
-            if (g_font_ui) {
-                int tx = lx + target_w + 8;
-                int ty = by + (target_h - font_height(g_font_ui, 13)) / 2;
-                font_draw_text(s, g_font_ui, 13, tx, ty,
-                               "Built with Claude Code", 0x00808898);
-            }
-        } else {
-            if (g_font_ui) {
-                const char *cc = "Built with Claude Code";
-                int tw = font_text_width(g_font_ui, 13, cc);
-                font_draw_text(s, g_font_ui, 13, cx + (cw - tw) / 2, by,
-                               cc, 0x00808898);
-            }
+        const char *credit = "Made with models from OpenAI and Anthropic";
+        int by = cy + win->client_h - 31;
+        if (g_font_ui) {
+            int tw = font_text_width(g_font_ui, 13, credit);
+            int px = cx + (cw - tw - 32) / 2;
+            draw_blend_rounded_rect(s, px, by - 7, tw + 32, 30, 15,
+                                    0x00FFFFFF, 22);
+            draw_rounded_outline(s, px, by - 7, tw + 32, 30, 15, 1,
+                                 0x002E3242);
+            font_draw_text(s, g_font_ui, 13, cx + (cw - tw) / 2, by,
+                           credit, 0x00808898);
         }
     }
 }
@@ -440,9 +382,6 @@ about_create(int screen_w, int screen_h)
         load_logo();
         soften_logo();
     }
-    if (!s_claude_px)
-        load_claude_logo();
-
     glyph_window_t *win = glyph_window_create("About LoricaOS", 400, 500);
     if (!win) return NULL;
 

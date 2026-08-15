@@ -7,7 +7,7 @@
 #   bin/lumen                       the compositor (stripped)
 #   etc/aegis/caps.d/lumen          its least-privilege compositor policy
 #   usr/share/fonts/*.ttf           toolkit fonts (every GUI app needs these)
-#   usr/share/{logo,claude,wallpaper}.raw  logo + desktop wallpaper
+#   usr/share/{logo,wallpaper}.raw         logo + desktop wallpaper
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -27,7 +27,7 @@ fi
 chmod 0755 "$STAGE/bin/lumen"
 cp pkg/caps.d/lumen "$STAGE/etc/aegis/caps.d/lumen"
 cp assets/*.ttf "$STAGE/usr/share/fonts/"
-for raw in logo claude wallpaper; do
+for raw in logo wallpaper; do
     [ -f "assets/$raw.raw" ] && cp "assets/$raw.raw" "$STAGE/usr/share/$raw.raw"
 done
 printf 'id=lumen\nname=Lumen Compositor\nversion=%s\nclass=system\narch=%s\n' "$VER" "$ARCH" > "$STAGE/manifest"
