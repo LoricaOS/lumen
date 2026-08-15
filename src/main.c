@@ -19,6 +19,7 @@
 #include "compositor.h"
 #include "terminal.h"
 #include "about.h"
+#include "error_viewer.h"
 #include "lumen_server.h"
 #include <image_load.h>
 
@@ -231,6 +232,11 @@ invoke_handler(compositor_t *comp, const char *name)
     if (strcmp(name, "applications") == 0) {
         long pid = spawn_external_client("/bin/applications");
         dprintf(2, "[LUMEN] window_opened=applications pid=%ld\n", pid);
+        if (pid < 0) {
+            char detail[96];
+            snprintf(detail, sizeof(detail), "launch failed (error %ld)", pid);
+            error_viewer_report(comp, "applications", detail);
+        }
         return;
     }
     /* Everything else resolves through the /apps bundle registry. A
@@ -243,11 +249,37 @@ invoke_handler(compositor_t *comp, const char *name)
     }
     long pid = spawn_external_client(app.exec);
     dprintf(2, "[LUMEN] window_opened=%s pid=%ld\n", app.id, pid);
+    if (pid < 0) {
+        char detail[96];
+        snprintf(detail, sizeof(detail), "launch failed (error %ld)", pid);
+        error_viewer_report(comp, app.id, detail);
+    }
+}
+
+/* boot_mark — timestamped boot-profiling milestone on CLOCK_MONOTONIC (same
+ * base as vigil's [PROF] marks). Boot-profiling only; cheap. */
+static void
+boot_mark(const char *phase)
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return;
+    unsigned long ms = (unsigned long)ts.tv_sec * 1000UL +
+                       (unsigned long)(ts.tv_nsec / 1000000L);
+    char pbuf[96];
+    int pn = snprintf(pbuf, sizeof(pbuf), "[PROF] %lu ms %s\n", ms, phase);
+    if (pn <= 0) return;
+    /* /dev/console = the kernel console (serial on the Pi). Use it, not fd 2:
+     * once bastion starts the graphical session, lumen and its children get
+     * stderr redirected off serial, so fd-2 marks never reach the boot log. */
+    int cfd = open("/dev/console", O_WRONLY);
+    if (cfd >= 0) { write(cfd, pbuf, (size_t)pn); close(cfd); }
+    else write(2, pbuf, (size_t)pn);
 }
 
 int
 main(void)
 {
+    boot_mark("lumen-enter");
     /* Refuse to run nested. Lumen sets LUMEN_RUNNING=1 below before
      * spawning any children, so any descendant that re-execs lumen
      * (e.g. user types `lumen` in a Lumen terminal) will trip this
@@ -313,6 +345,7 @@ main(void)
 
     /* Start external window server */
     int lumen_srv_fd = lumen_server_init();
+    int lumen_srv_errno = errno;
     if (lumen_srv_fd < 0)
         dprintf(2, "[LUMEN] warning: could not open /run/lumen.sock\n");
 
@@ -320,22 +353,12 @@ main(void)
      * (/usr/share/wallpaper.raw, shipped with this package); the compositor
      * falls back to a plain gradient only if it is missing. */
     load_wallpaper(&comp.wallpaper);
+    boot_mark("lumen-wallpaper");
 
     /* Register INVOKE handler so external dock can spawn built-ins. */
     lumen_server_set_invoke_handler(invoke_handler);
 
-    /* Snapshot current FB (Bastion's login form) BEFORE first composite.
-     * Use mmap (not malloc) for this one-shot 4 MB buffer so munmap below
-     * actually returns it to the OS — musl's allocator would otherwise
-     * retain a freed malloc region of this size in Lumen's footprint. */
     size_t fb_bytes = (size_t)pitch_px * fb_h * 4;
-    size_t npx = (size_t)pitch_px * fb_h;
-    uint32_t *saved_frame = mmap(NULL, fb_bytes, PROT_READ | PROT_WRITE,
-                                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (saved_frame == MAP_FAILED)
-        saved_frame = NULL;
-    if (saved_frame)
-        memcpy(saved_frame, fb, fb_bytes);
 
     /* Initial full composite — renders desktop to backbuf, then copies to FB.
      * We need the backbuf result but NOT the FB write. Temporarily swap FB
@@ -349,31 +372,17 @@ main(void)
     comp.fb.buf = backbuf;  /* composite writes backbuf→backbuf (harmless) */
     comp_composite(&comp);
     comp.fb.buf = real_fb;  /* restore real FB */
+    boot_mark("lumen-composited");
 
-    /* Crossfade from saved Bastion frame → composited desktop (in backbuf) */
-    if (saved_frame) {
-        struct timespec ts = { 0, 17000000 }; /* 17ms per step — 250ms total */
-        for (int step = 0; step < 15; step++) {
-            int alpha = 255 - (step * 255 / 14);
-            int inv = 255 - alpha;
-            for (size_t i = 0; i < npx; i++) {
-                uint32_t old = saved_frame[i];
-                uint32_t new_px = backbuf[i];
-                uint32_t r = (((old >> 16) & 0xFF) * alpha + ((new_px >> 16) & 0xFF) * inv) / 255;
-                uint32_t g = (((old >> 8) & 0xFF) * alpha + ((new_px >> 8) & 0xFF) * inv) / 255;
-                uint32_t b = ((old & 0xFF) * alpha + (new_px & 0xFF) * inv) / 255;
-                fb[i] = (r << 16) | (g << 8) | b;
-            }
-            syscall(515, 0L);   /* present fade step (no-op on direct FB) */
-            nanosleep(&ts, NULL);
-        }
-        munmap(saved_frame, fb_bytes);
-    }
-    /* Final: copy actual desktop to FB cleanly */
+    /* Present the composited desktop directly — hard cut from Bastion's last
+     * frame to the desktop. The old snapshot+crossfade animation cost ~150-250ms
+     * of pure time-to-desktop (it was the single biggest chunk of the boot→
+     * desktop timeline) and has been removed. */
     memcpy(fb, backbuf, fb_bytes);
     syscall(515, 0L);           /* present the composited desktop */
 
     /* Signal test harness: fade-in complete, desktop is on screen */
+    boot_mark("lumen-ready");
     dprintf(2, "[LUMEN] ready\n");
 
     glyph_cursor_show(comp.cursor_x, comp.cursor_y);
@@ -416,6 +425,14 @@ main(void)
         }
     }
 
+    if (lumen_srv_fd < 0) {
+        char detail[96];
+        snprintf(detail, sizeof(detail),
+                 "could not publish /run/lumen.sock (errno=%d)",
+                 lumen_srv_errno);
+        error_viewer_report(&comp, "Lumen", detail);
+    }
+
     /* Clock update counter */
     int clock_counter = 0;
 
@@ -437,6 +454,8 @@ main(void)
          * MAX_PROCESSES slot (the GUI would stop spawning after ~63 opens). */
         while (waitpid(-1, NULL, WNOHANG) > 0)
             ;
+
+        error_viewer_poll(&comp);
 
         /* Service external window clients */
         if (lumen_srv_fd >= 0) {
